@@ -98,6 +98,15 @@ export interface SlsSystemMetrics {
   uptimeSeconds: number;
 }
 
+export interface SlsApiKey {
+  id: string;
+  name: string;
+  secret: string;
+  createdAt: string;
+  lastUsed: string;
+  status: "active" | "revoked";
+}
+
 export interface PortalUser {
   id: string;
   username: string;
@@ -107,5 +116,6 @@ export interface PortalUser {
   maxMemoryKB: number;
   balanceUSD: number;
   rentCostMonthly: number;
+  apiKeys?: SlsApiKey[];
 }
 

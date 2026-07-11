@@ -160,6 +160,7 @@ export default function App() {
   const [activeTx, setActiveTx] = useState<Transaction | null>(null);
   const [activeUser, setActiveUser] = useState<SlsUser>(SlsUser.SYSTEM_KERNEL);
   const [systemState, setSystemState] = useState<"RUNNING" | "CRASHED" | "RECOVERING">("RUNNING");
+  const [localLastUpdated, setLocalLastUpdated] = useState<number>(0);
 
   // Automated Tiering daemon configuration states
   const [autoTierEnabled, setAutoTierEnabled] = useState<boolean>(() => {
@@ -255,6 +256,7 @@ export default function App() {
       setWalLogs([]);
       setSystemMetrics(INITIAL_METRICS);
       setSystemState("RUNNING");
+      setLocalLastUpdated(0);
       return;
     }
 
@@ -263,6 +265,7 @@ export default function App() {
     const savedWalLogs = localStorage.getItem(`sls_wal_logs_${user.id}`);
     const savedMetrics = localStorage.getItem(`sls_metrics_${user.id}`);
     const savedSystemState = localStorage.getItem(`sls_system_state_${user.id}`);
+    const savedLastUpdated = localStorage.getItem(`sls_last_updated_${user.id}`);
 
     let loadedObjects = getInitialObjectsForUser(user);
     if (savedObjects) {
@@ -314,8 +317,26 @@ export default function App() {
     }
     setSystemState(loadedSysState);
 
+    const loadedLastUpdated = savedLastUpdated ? parseInt(savedLastUpdated, 10) : Date.now();
+    setLocalLastUpdated(loadedLastUpdated);
+
     // Build memory map from loaded objects
     setMemoryPages(buildMemoryPages(loadedObjects));
+
+    // Seed/initialize backend space with loaded client copy
+    fetch(`/api/v1/sync/${user.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        objects: loadedObjects,
+        services: loadedServices,
+        walLogs: loadedWal,
+        systemMetrics: loadedMetrics,
+        systemState: loadedSysState,
+        lastUpdated: loadedLastUpdated,
+        apiKeys: user.apiKeys || []
+      })
+    }).catch(err => console.warn("Initial SLS Sync failed:", err));
   };
 
   useEffect(() => {
@@ -328,15 +349,101 @@ export default function App() {
     currentServices: MicrokernelService[],
     currentWalLogs: WalLogEntry[],
     currentMetrics: SlsSystemMetrics,
-    currentSysState: string
+    currentSysState: string,
+    timestamp: number = Date.now()
   ) => {
     if (!currentPortalUser) return;
+    setLocalLastUpdated(timestamp);
     localStorage.setItem(`sls_objects_${currentPortalUser.id}`, JSON.stringify(currentObjects));
     localStorage.setItem(`sls_services_${currentPortalUser.id}`, JSON.stringify(currentServices));
     localStorage.setItem(`sls_wal_logs_${currentPortalUser.id}`, JSON.stringify(currentWalLogs));
     localStorage.setItem(`sls_metrics_${currentPortalUser.id}`, JSON.stringify(currentMetrics));
     localStorage.setItem(`sls_system_state_${currentPortalUser.id}`, currentSysState);
+    localStorage.setItem(`sls_last_updated_${currentPortalUser.id}`, String(timestamp));
+
+    // Synchronously send state update to backend
+    fetch(`/api/v1/sync/${currentPortalUser.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        objects: currentObjects,
+        services: currentServices,
+        walLogs: currentWalLogs,
+        systemMetrics: currentMetrics,
+        systemState: currentSysState,
+        lastUpdated: timestamp,
+        apiKeys: currentPortalUser.apiKeys || []
+      })
+    }).catch(err => console.warn("Background API sync failed:", err));
   };
+
+  // Live polling for external API modification sync
+  useEffect(() => {
+    if (!currentPortalUser) return;
+
+    const syncInterval = setInterval(() => {
+      fetch(`/api/v1/sync/${currentPortalUser.id}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.state) {
+            const serverState = data.state;
+            const localSaved = localStorage.getItem(`sls_last_updated_${currentPortalUser.id}`);
+            const localTs = localSaved ? parseInt(localSaved, 10) : 0;
+
+            if (serverState.lastUpdated > localTs) {
+              console.log("[SLS REST API Sync] Server state newer. Syncing updates down...");
+              setObjects(serverState.objects);
+              setServices(serverState.services);
+              setWalLogs(serverState.walLogs);
+              setSystemMetrics(serverState.systemMetrics);
+              setSystemState(serverState.systemState);
+              setMemoryPages(buildMemoryPages(serverState.objects));
+              setLocalLastUpdated(serverState.lastUpdated);
+
+              localStorage.setItem(`sls_objects_${currentPortalUser.id}`, JSON.stringify(serverState.objects));
+              localStorage.setItem(`sls_services_${currentPortalUser.id}`, JSON.stringify(serverState.services));
+              localStorage.setItem(`sls_wal_logs_${currentPortalUser.id}`, JSON.stringify(serverState.walLogs));
+              localStorage.setItem(`sls_metrics_${currentPortalUser.id}`, JSON.stringify(serverState.systemMetrics));
+              localStorage.setItem(`sls_system_state_${currentPortalUser.id}`, serverState.systemState);
+              localStorage.setItem(`sls_last_updated_${currentPortalUser.id}`, String(serverState.lastUpdated));
+
+              if (serverState.apiKeys) {
+                const updatedUser = { ...currentPortalUser, apiKeys: serverState.apiKeys };
+                setCurrentPortalUser(updatedUser);
+                localStorage.setItem("sls_current_portal_user", JSON.stringify(updatedUser));
+                
+                // Update in global list
+                const savedRegistry = localStorage.getItem("sls_portal_users");
+                let registry = [];
+                if (savedRegistry) {
+                  try { registry = JSON.parse(savedRegistry); } catch (e) {}
+                }
+                const updatedRegistry = registry.map((u: any) => u.id === updatedUser.id ? updatedUser : u);
+                localStorage.setItem("sls_portal_users", JSON.stringify(updatedRegistry));
+              }
+            } else if (serverState.lastUpdated < localTs) {
+              // Server state is older or lost due to reboot, push local state to restore parity
+              fetch(`/api/v1/sync/${currentPortalUser.id}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  objects,
+                  services,
+                  walLogs,
+                  systemMetrics,
+                  systemState,
+                  lastUpdated: localTs,
+                  apiKeys: currentPortalUser.apiKeys || []
+                })
+              }).catch(() => {});
+            }
+          }
+        })
+        .catch(err => console.warn("Polling synchronization error:", err));
+    }, 3000);
+
+    return () => clearInterval(syncInterval);
+  }, [currentPortalUser, objects, services, walLogs, systemMetrics, systemState]);
 
   // Keep ticking uptime metrics in background
   useEffect(() => {
@@ -429,6 +536,71 @@ export default function App() {
     setShowCreateDialog(false);
 
     saveStateToStorage(updatedObjs, services, updatedWal, updatedMetrics, systemState);
+  };
+
+  // Action: Bulk Import/Restore memory segments
+  const handleBulkImportObjects = (imported: SlsObject[], replaceExisting: boolean): { success: boolean; error?: string } => {
+    if (!currentPortalUser) {
+      return { success: false, error: "Authentication token missing. Please log in first." };
+    }
+
+    const currentPages = replaceExisting ? 0 : objects.reduce((acc, obj) => acc + obj.sizePages, 0);
+    const importedPages = imported.reduce((acc, obj) => acc + obj.sizePages, 0);
+    const maxPages = (currentPortalUser.maxMemoryKB) / 4;
+
+    if (currentPages + importedPages > maxPages) {
+      return {
+        success: false,
+        error: `LEASE QUOTA EXCEEDED: Your current ${currentPortalUser.tier} Lease allows a maximum of ${currentPortalUser.maxMemoryKB} KB (${maxPages} pages). The imported segments require ${importedPages} pages, and you currently have ${replaceExisting ? 0 : currentPages} pages allocated. Sum: ${currentPages + importedPages} pages. Please upgrade your lease tier first!`
+      };
+    }
+
+    // Assign unique IDs and ensure properties are sound
+    const cleanedImported = imported.map((obj, index) => {
+      const id = obj.id && !objects.some(o => o.id === obj.id) && !imported.slice(0, index).some(o => o.id === obj.id)
+        ? obj.id 
+        : `heap_obj_${Date.now()}_${index}_${Math.floor(Math.random() * 1000)}`;
+      
+      const startAddress = obj.startAddress || `0x0000_1000_${(0xA000 + (index * 0x0100)).toString(16).toUpperCase()}_0000`;
+
+      return {
+        ...obj,
+        id,
+        startAddress,
+        lastAccessTime: obj.lastAccessTime || new Date().toISOString(),
+        tier: obj.tier || StorageTier.L2_DRAM,
+        isCompressed: obj.tier === StorageTier.L4_ARCHIVE
+      };
+    });
+
+    const updatedObjs = replaceExisting ? cleanedImported : [...objects, ...cleanedImported];
+    setObjects(updatedObjs);
+    setMemoryPages(buildMemoryPages(updatedObjs));
+
+    // Update WAL logs
+    const newWal: WalLogEntry = {
+      index: walLogs.length + 1,
+      txId: null,
+      timestamp: new Date().toISOString(),
+      action: "ALLOCATE",
+      details: `Bulk memory load transaction: Allocated ${cleanedImported.length} segments, mode: ${replaceExisting ? "OVERWRITE" : "MERGE"}. Total size: ${importedPages * 4} KB.`,
+      checksum: generateChecksum(`BULK_${Date.now()}`),
+      verified: true
+    };
+    const updatedWal = [...walLogs, newWal];
+    setWalLogs(updatedWal);
+
+    // Update system metrics
+    const totalAllocatedPages = updatedObjs.reduce((acc, o) => acc + o.sizePages, 0);
+    const updatedMetrics = {
+      ...systemMetrics,
+      totalAllocatedPages
+    };
+    setSystemMetrics(updatedMetrics);
+
+    saveStateToStorage(updatedObjs, services, updatedWal, updatedMetrics, systemState);
+
+    return { success: true };
   };
 
   // Action: Move memory page tiers (High-Speed Archival Storage Tiering)
@@ -994,6 +1166,7 @@ export default function App() {
             onLogout={handlePortalLogout}
             onUpdateUser={handleUpdatePortalUser}
             objects={objects}
+            onBulkImportObjects={handleBulkImportObjects}
           />
         ) : (
           <>
@@ -1004,6 +1177,7 @@ export default function App() {
                 onLogout={handlePortalLogout}
                 onUpdateUser={handleUpdatePortalUser}
                 objects={objects}
+                onBulkImportObjects={handleBulkImportObjects}
               />
             )}
 

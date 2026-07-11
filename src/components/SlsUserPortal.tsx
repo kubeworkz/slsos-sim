@@ -21,7 +21,12 @@ import {
   Sparkles,
   ArrowUpRight,
   Download,
-  FileText
+  FileText,
+  Upload,
+  AlertCircle,
+  Code,
+  Copy,
+  Check
 } from "lucide-react";
 
 // Predefined seed users for the SaaS simulator
@@ -74,6 +79,7 @@ interface SlsUserPortalProps {
   onLogout: () => void;
   onUpdateUser: (user: PortalUser) => void;
   objects: SlsObject[];
+  onBulkImportObjects: (imported: SlsObject[], replaceExisting: boolean) => { success: boolean; error?: string };
 }
 
 export default function SlsUserPortal({
@@ -81,7 +87,8 @@ export default function SlsUserPortal({
   onLogin,
   onLogout,
   onUpdateUser,
-  objects
+  objects,
+  onBulkImportObjects
 }: SlsUserPortalProps) {
   // Login / Registration Form States
   const [isRegistering, setIsRegistering] = useState(false);
@@ -97,6 +104,123 @@ export default function SlsUserPortal({
 
   // Upgrade state
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+
+  // REST API panel interactive states
+  const [activeApiExample, setActiveApiExample] = useState<"list" | "valloc" | "write" | "free" | "hexdump">("list");
+  const [copiedToken, setCopiedToken] = useState(false);
+  const [copiedCurl, setCopiedCurl] = useState(false);
+  const [selectedKeySecret, setSelectedKeySecret] = useState<string>("");
+  const [newKeyName, setNewKeyName] = useState("");
+  const [keyGenerationSuccess, setKeyGenerationSuccess] = useState<string | null>(null);
+  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
+
+  // Bulk upload / import state
+  const [bulkJsonText, setBulkJsonText] = useState("");
+  const [importMode, setImportMode] = useState<"merge" | "overwrite">("merge");
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importSuccess, setImportSuccess] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleProcessBulkImport = (textToParse: string) => {
+    setImportError(null);
+    setImportSuccess(null);
+    
+    if (!textToParse.trim()) {
+      setImportError("Please provide some JSON data to import.");
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(textToParse);
+      
+      // Determine list of objects
+      let importedObjects: any[] = [];
+      if (Array.isArray(parsed)) {
+        importedObjects = parsed;
+      } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.objects)) {
+        importedObjects = parsed.objects;
+      } else {
+        setImportError("Invalid format. Input must be a JSON array of objects or an exported manifest containing an 'objects' array.");
+        return;
+      }
+
+      if (importedObjects.length === 0) {
+        setImportError("No segments found in the uploaded data.");
+        return;
+      }
+
+      // Convert and validate structure
+      const cleaned: SlsObject[] = importedObjects.map((item, idx) => {
+        const payloadData = item.data || item.payload || {};
+        return {
+          id: item.id || `heap_obj_imported_${Date.now()}_${idx}`,
+          name: item.name || `ImportedSegment_0${idx + 1}`,
+          type: item.type || "DB_TABLE",
+          startAddress: item.startAddress || item.address || `0x0000_1000_${(0xAC00 + (idx * 0x0100)).toString(16).toUpperCase()}_0000`,
+          sizePages: typeof item.sizePages === "number" ? item.sizePages : (typeof item.pages === "number" ? item.pages : 4),
+          tier: item.tier || "L2_DRAM",
+          owner: item.owner || SlsUser.APP_USER,
+          lastAccessTime: item.lastAccessTime || new Date().toISOString(),
+          isCompressed: item.isCompressed || item.tier === "L4_ARCHIVE",
+          acl: item.acl || {
+            [SlsUser.SYSTEM_KERNEL]: { read: true, write: true, execute: true },
+            [SlsUser.DB_ADMIN]: { read: true, write: true, execute: false },
+            [SlsUser.APP_USER]: { read: true, write: true, execute: false },
+            [SlsUser.GUEST]: { read: true, write: false, execute: false }
+          },
+          data: payloadData
+        } as SlsObject;
+      });
+
+      // Call prop
+      const result = onBulkImportObjects(cleaned, importMode === "overwrite");
+      if (result.success) {
+        setImportSuccess(`SUCCESS: Allocated ${cleaned.length} virtual segments inside your flat address space. Mode: ${importMode.toUpperCase()}.`);
+        setBulkJsonText("");
+      } else {
+        setImportError(result.error || "Failed to perform bulk allocation.");
+      }
+    } catch (e: any) {
+      setImportError(`JSON Parse Failure: ${e.message || "Ensure the pasted data is valid RFC-8259 JSON."}`);
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      setBulkJsonText(text);
+      handleProcessBulkImport(text);
+    };
+    reader.readAsText(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      setBulkJsonText(text);
+      handleProcessBulkImport(text);
+    };
+    reader.readAsText(file);
+  };
 
   // Address Space Export Handlers
   const downloadFile = (content: string, filename: string, contentType: string) => {
@@ -307,6 +431,83 @@ export default function SlsUserPortal({
     onUpdateUser(updatedUser);
     setShowUpgradeModal(false);
     setErrorMsg("");
+  };
+
+  // Seed / Initialize a Primary Developer key if keys array is empty
+  React.useEffect(() => {
+    if (currentUser && (!currentUser.apiKeys || currentUser.apiKeys.length === 0)) {
+      const defaultKey = {
+        id: "default_primary_key",
+        name: "Primary Developer Key",
+        secret: `sls_dev_key_${currentUser.id}`,
+        createdAt: new Date().toISOString(),
+        lastUsed: "Never",
+        status: "active" as const
+      };
+      onUpdateUser({
+        ...currentUser,
+        apiKeys: [defaultKey]
+      });
+    }
+  }, [currentUser, onUpdateUser]);
+
+  // Synchronize dynamic active key selection
+  React.useEffect(() => {
+    if (currentUser?.apiKeys && currentUser.apiKeys.length > 0) {
+      const activeKeys = currentUser.apiKeys.filter(k => k.status === "active");
+      if (activeKeys.length > 0) {
+        if (!selectedKeySecret || !activeKeys.some(k => k.secret === selectedKeySecret)) {
+          setSelectedKeySecret(activeKeys[0].secret);
+        }
+      } else {
+        setSelectedKeySecret("");
+      }
+    } else if (currentUser) {
+      setSelectedKeySecret(`sls_dev_key_${currentUser.id}`);
+    }
+  }, [currentUser?.apiKeys, selectedKeySecret, currentUser?.id]);
+
+  const handleGenerateKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser) return;
+    if (!newKeyName.trim()) return;
+
+    const randomSuffix = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const newSecret = `sls_dev_key_${currentUser.id}__${randomSuffix}`;
+    const newKey = {
+      id: `key_${Date.now()}_${randomSuffix}`,
+      name: newKeyName.trim(),
+      secret: newSecret,
+      createdAt: new Date().toISOString(),
+      lastUsed: "Never",
+      status: "active" as const
+    };
+
+    const updatedKeys = [...(currentUser.apiKeys || []), newKey];
+    onUpdateUser({
+      ...currentUser,
+      apiKeys: updatedKeys
+    });
+
+    setNewKeyName("");
+    setKeyGenerationSuccess(newSecret);
+    setSelectedKeySecret(newSecret);
+  };
+
+  const handleRevokeKey = (keyId: string) => {
+    if (!currentUser || !currentUser.apiKeys) return;
+
+    const updatedKeys = currentUser.apiKeys.map(k => {
+      if (k.id === keyId) {
+        return { ...k, status: "revoked" as const };
+      }
+      return k;
+    });
+
+    onUpdateUser({
+      ...currentUser,
+      apiKeys: updatedKeys
+    });
   };
 
   return (
@@ -703,6 +904,515 @@ export default function SlsUserPortal({
                   </p>
                 </div>
               )}
+            </div>
+          </div>
+
+          {/* Bulk Space Importer Panel */}
+          <div className="border border-white/10 bg-[#0B0E14] p-6 md:p-8 space-y-6">
+            <div className="border-b border-white/10 pb-4">
+              <div className="flex items-center gap-2">
+                <Upload className="w-4 h-4 text-cyan-400" />
+                <span className="font-mono text-[9px] text-cyan-400 uppercase tracking-widest font-bold">Address Space Bulk Importer</span>
+              </div>
+              <h3 className="text-lg font-serif italic text-white mt-1">Bulk Upload & Import Space Records</h3>
+              <p className="text-white/50 text-xs font-light mt-1">
+                Upload a backup <strong className="text-cyan-400 font-mono font-normal">.json</strong> manifest, or paste raw virtual page segments to commit them directly into your flat memory space.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Drag & Drop File Zone */}
+              <div 
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`border-2 border-dashed p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-colors ${
+                  isDragging 
+                    ? "border-cyan-400 bg-cyan-400/5 text-white" 
+                    : "border-white/10 bg-[#0F1219] hover:bg-[#151922] text-white/60"
+                }`}
+                onClick={() => document.getElementById("bulk-file-upload")?.click()}
+              >
+                <input 
+                  type="file" 
+                  id="bulk-file-upload" 
+                  className="hidden" 
+                  accept=".json" 
+                  onChange={handleFileChange} 
+                />
+                <Upload className="w-8 h-8 text-cyan-400 mb-3 animate-pulse" />
+                <span className="font-mono text-xs font-bold uppercase tracking-wider block mb-1">
+                  Drag & Drop Manifest File
+                </span>
+                <span className="text-[10px] text-white/40 font-light block mb-3">
+                  Accepts exported flat space .json archives
+                </span>
+                <span className="bg-[#0B0E14] border border-white/10 text-white/70 font-mono text-[9px] px-2.5 py-1 uppercase tracking-wider hover:text-white transition-colors">
+                  Browse Files
+                </span>
+              </div>
+
+              {/* Raw JSON Paste Area */}
+              <div className="flex flex-col space-y-2">
+                <label className="font-mono text-[10px] text-white/40 uppercase tracking-widest">
+                  // paste raw memory segment json
+                </label>
+                <textarea
+                  value={bulkJsonText}
+                  onChange={(e) => setBulkJsonText(e.target.value)}
+                  placeholder={`[
+  {
+    "name": "SimulatedUserTable",
+    "type": "DB_TABLE",
+    "sizePages": 4,
+    "payload": { "id": "USR_9", "active": true }
+  }
+]`}
+                  className="w-full h-[140px] bg-[#0F1219] border border-white/10 p-3 font-mono text-[11px] text-white placeholder-white/20 focus:outline-none focus:border-cyan-400/50 resize-none scrollbar-thin rounded-none"
+                />
+              </div>
+            </div>
+
+            {/* Importer Actions and Option Selectors */}
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-[#0F1219] p-4 border border-white/5 gap-4">
+              <div className="flex flex-col space-y-1.5">
+                <span className="font-mono text-[10px] text-white/40 uppercase tracking-widest block">Allocation Strategy</span>
+                <div className="flex items-center gap-6">
+                  <label className="flex items-center gap-2 cursor-pointer font-mono text-xs text-white">
+                    <input
+                      type="radio"
+                      name="import-mode"
+                      checked={importMode === "merge"}
+                      onChange={() => setImportMode("merge")}
+                      className="accent-cyan-400 cursor-pointer"
+                    />
+                    Merge (Append segments)
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer font-mono text-xs text-white/80 hover:text-white">
+                    <input
+                      type="radio"
+                      name="import-mode"
+                      checked={importMode === "overwrite"}
+                      onChange={() => setImportMode("overwrite")}
+                      className="accent-cyan-400 cursor-pointer"
+                    />
+                    Overwrite (Flush and restore)
+                  </label>
+                </div>
+              </div>
+
+              <button
+                onClick={() => handleProcessBulkImport(bulkJsonText)}
+                disabled={!bulkJsonText.trim()}
+                className="w-full sm:w-auto bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 disabled:cursor-not-allowed text-[#0B0E14] font-mono text-xs font-bold px-6 py-3 tracking-wider uppercase flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer"
+              >
+                Commit Bulk Allocation
+              </button>
+            </div>
+
+            {/* Success and Error messages */}
+            {importError && (
+              <div className="bg-red-950/20 border border-red-500/20 p-4 text-xs font-mono text-red-400 flex items-start gap-2.5 animate-fadeIn">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <span className="font-bold uppercase tracking-wider block">Allocation Stall</span>
+                  <p className="font-light text-red-300">{importError}</p>
+                </div>
+              </div>
+            )}
+
+            {importSuccess && (
+              <div className="bg-emerald-950/20 border border-emerald-500/20 p-4 text-xs font-mono text-emerald-400 flex items-start gap-2.5 animate-fadeIn">
+                <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <span className="font-bold uppercase tracking-wider block">Translation parity resolved</span>
+                  <p className="font-light text-emerald-300">{importSuccess}</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* REST API Access Gateway Panel */}
+          <div className="border border-white/10 bg-[#0B0E14] p-6 md:p-8 space-y-6">
+            <div className="border-b border-white/10 pb-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Globe className="w-4 h-4 text-emerald-400" />
+                  <span className="font-mono text-[9px] text-emerald-400 uppercase tracking-widest font-bold">REST API Gateway</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  </span>
+                  <span className="font-mono text-[9px] text-emerald-400 uppercase tracking-wider font-semibold">Active & Live</span>
+                </div>
+              </div>
+              <h3 className="text-lg font-serif italic text-white mt-1">Sovereign OS REST Developer API</h3>
+              <p className="text-white/50 text-xs font-light mt-1">
+                Expose your Single Level Storage flat virtual memory space to external scripts and tools. Command allocations, trigger writes, and query page states remotely in real-time.
+              </p>
+            </div>
+
+            {/* API Key Management Panel */}
+            {currentUser && (
+              <div className="space-y-6 border-t border-white/5 pt-6">
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+                  {/* Generate Key Form */}
+                  <div className="md:col-span-4 bg-[#0F1219] border border-white/5 p-5 flex flex-col justify-between space-y-4">
+                    <div className="space-y-1">
+                      <span className="font-mono text-[9px] text-cyan-400 uppercase tracking-widest font-bold block mb-1">// key allocation unit</span>
+                      <h4 className="text-xs font-mono font-bold text-white uppercase">Generate API Access Token</h4>
+                      <p className="text-[10px] text-white/40 leading-relaxed font-light">
+                        Create a unique secret key to authenticate your scripts and third-party tools against the Sovereign flat memory space.
+                      </p>
+                    </div>
+
+                    <form onSubmit={handleGenerateKey} className="space-y-3">
+                      <div className="flex flex-col space-y-1.5">
+                        <label className="font-mono text-[9px] text-white/40 uppercase tracking-wider">Key Label / Name</label>
+                        <input
+                          type="text"
+                          value={newKeyName}
+                          onChange={(e) => setNewKeyName(e.target.value)}
+                          placeholder="e.g. CLI Backup, Node.js worker"
+                          className="w-full bg-[#0B0E14] border border-white/10 p-2.5 font-mono text-xs text-white placeholder-white/20 focus:outline-none focus:border-cyan-400"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={!newKeyName.trim()}
+                        className="w-full bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 disabled:cursor-not-allowed text-[#0B0E14] font-mono text-xs font-bold py-2.5 uppercase tracking-wider transition-colors cursor-pointer"
+                      >
+                        + Generate Secret Key
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* Keys Table / Registry */}
+                  <div className="md:col-span-8 bg-[#0F1219] border border-white/5 p-5 space-y-3 flex flex-col">
+                    <div className="flex justify-between items-center border-b border-white/15 pb-2">
+                      <div>
+                        <span className="font-mono text-[9px] text-amber-400 uppercase tracking-widest font-bold block">// authorized token registry</span>
+                        <h4 className="text-xs font-mono font-bold text-white uppercase">Authorized Secrets Keyring</h4>
+                      </div>
+                      <span className="font-mono text-[10px] text-white/40">
+                        {currentUser.apiKeys?.length || 0} Segment Keys
+                      </span>
+                    </div>
+
+                    {keyGenerationSuccess && (
+                      <div className="bg-emerald-950/20 border border-emerald-500/20 p-3.5 font-mono text-xs text-emerald-400 animate-fadeIn space-y-2">
+                        <div className="flex items-center gap-2">
+                          <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span className="font-bold uppercase tracking-wider block">Secret allocated successfully!</span>
+                        </div>
+                        <p className="text-[10px] text-emerald-300 leading-normal font-light">
+                          Copy this key now. It has been pre-selected as your active console key.
+                        </p>
+                        <div className="flex items-center gap-2 mt-2 bg-[#0B0E14] border border-emerald-500/30 p-2 text-white">
+                          <code className="text-emerald-300 text-[10px] select-all truncate flex-1">{keyGenerationSuccess}</code>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(keyGenerationSuccess);
+                              setCopiedToken(true);
+                              setTimeout(() => setCopiedToken(false), 2000);
+                            }}
+                            className="p-1.5 bg-[#0F1219] hover:bg-white/5 border border-white/10 text-white/60 hover:text-white transition-colors cursor-pointer"
+                          >
+                            {copiedToken ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="overflow-x-auto select-none">
+                      <table className="w-full text-left font-mono text-[10.5px] border-collapse">
+                        <thead>
+                          <tr className="border-b border-white/10 text-white/40 text-[9px] uppercase tracking-wider">
+                            <th className="py-2.5 px-3 font-normal">// KEY LABEL</th>
+                            <th className="py-2.5 px-3 font-normal">SECRET ADDRESS</th>
+                            <th className="py-2.5 px-3 font-normal">ALLOCATED</th>
+                            <th className="py-2.5 px-3 font-normal">LAST ACTIVE</th>
+                            <th className="py-2.5 px-3 font-normal">STATUS</th>
+                            <th className="py-2.5 px-3 font-normal text-right">ACTION</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {currentUser.apiKeys && currentUser.apiKeys.length > 0 ? (
+                            currentUser.apiKeys.map((key) => {
+                              const isActive = key.status === "active";
+                              const isSelected = selectedKeySecret === key.secret;
+                              return (
+                                <tr
+                                  key={key.id}
+                                  onClick={() => isActive && setSelectedKeySecret(key.secret)}
+                                  className={`border-b border-white/5 transition-all cursor-pointer ${
+                                    isActive ? "hover:bg-white/5" : "opacity-35"
+                                  } ${isSelected ? "bg-cyan-500/5 text-white" : "text-white/70"}`}
+                                >
+                                  <td className="py-2.5 px-3 font-bold truncate max-w-[120px]">
+                                    <div className="flex items-center gap-1.5">
+                                      {isActive && (
+                                        <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-cyan-400 animate-pulse" : "bg-white/20"}`} />
+                                      )}
+                                      <span className="truncate">{key.name}</span>
+                                      {isSelected && (
+                                        <span className="text-[8px] bg-cyan-400/10 border border-cyan-400/20 text-cyan-400 px-1 py-0.2 rounded uppercase">
+                                          Console
+                                        </span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
+                                    <div className="flex items-center gap-1.5">
+                                      <code className="bg-[#0B0E14] border border-white/5 px-2 py-0.5 text-[9.5px] rounded text-emerald-400 font-normal">
+                                        {isActive 
+                                          ? `${key.secret.substring(0, 16)}...${key.secret.substring(key.secret.length - 4)}` 
+                                          : "••••••••••••••••••••"
+                                        }
+                                      </code>
+                                      {isActive && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            navigator.clipboard.writeText(key.secret);
+                                            setCopiedKeyId(key.id);
+                                            setTimeout(() => setCopiedKeyId(null), 2000);
+                                          }}
+                                          className="p-1 bg-[#0B0E14] hover:bg-white/5 border border-white/10 text-white/50 hover:text-white transition-colors cursor-pointer"
+                                        >
+                                          {copiedKeyId === key.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                                        </button>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-white/40 text-[9.5px]">
+                                    {new Date(key.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                                  </td>
+                                  <td className="py-2.5 px-3 text-white/40 text-[9.5px]">
+                                    {key.lastUsed === "Never" ? (
+                                      <span className="text-white/20 italic">Never</span>
+                                    ) : (
+                                      new Date(key.lastUsed).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+                                    )}
+                                  </td>
+                                  <td className="py-2.5 px-3">
+                                    <span className={`text-[9px] font-bold uppercase tracking-wider ${isActive ? "text-emerald-400" : "text-red-400"}`}>
+                                      {isActive ? "● Active" : "○ Revoked"}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-right" onClick={(e) => e.stopPropagation()}>
+                                    {isActive ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRevokeKey(key.id)}
+                                        className="bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20 px-2.5 py-1 text-[9px] uppercase tracking-wider transition-colors cursor-pointer"
+                                      >
+                                        Revoke
+                                      </button>
+                                    ) : (
+                                      <span className="text-white/20 text-[9px] italic uppercase">Disabled</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          ) : (
+                            <tr>
+                              <td colSpan={6} className="py-6 text-center text-white/30 italic font-light">
+                                No keys provisioned. Configure a label and valloc a secret key above.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-[#0F1219]/40 border border-white/5 p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <span className="font-mono text-[9px] text-white/40 uppercase tracking-wider block">// CURRENT CONSOLE ACCESS STRING</span>
+                    <div className="flex items-center gap-2 font-mono text-xs text-white">
+                      <code className="bg-[#0B0E14] border border-white/10 px-3 py-1.5 text-cyan-300 rounded font-normal select-all">
+                        {selectedKeySecret || "No active key selected"}
+                      </code>
+                      {selectedKeySecret && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(selectedKeySecret);
+                            setCopiedToken(true);
+                            setTimeout(() => setCopiedToken(false), 2000);
+                          }}
+                          className="p-1.5 bg-[#0B0E14] hover:bg-white/5 border border-white/10 text-white/60 hover:text-white transition-colors cursor-pointer"
+                          title="Copy Active Token"
+                        >
+                          {copiedToken ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-right md:max-w-xs space-y-1">
+                    <span className="font-mono text-[9px] text-red-400 uppercase tracking-wider font-semibold block">⚠️ INGRESS ACCESS CONTROL</span>
+                    <p className="text-[10px] text-white/40 font-light leading-relaxed">
+                      All active keys grant read/write permissions directly to the leased memory segments. Revoke compromised keys immediately.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Interactive API Terminal / Documentation docs */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-2">
+              {/* Method list */}
+              <div className="lg:col-span-4 flex flex-col space-y-1">
+                <span className="font-mono text-[9px] text-white/40 uppercase tracking-wider mb-2 block">Endpoints Reference</span>
+                
+                {[
+                  { id: "list", method: "GET", path: "/api/v1/memory", label: "List Segments", color: "text-blue-400 border-blue-400/20" },
+                  { id: "valloc", method: "POST", path: "/api/v1/memory/valloc", label: "Virtual Alloc (valloc)", color: "text-emerald-400 border-emerald-400/20" },
+                  { id: "write", method: "POST", path: "/api/v1/memory/write", label: "Heap Bypass Write", color: "text-amber-400 border-amber-400/20" },
+                  { id: "free", method: "DELETE", path: "/api/v1/memory/free/:id", label: "Deallocate / Free", color: "text-rose-400 border-rose-400/20" },
+                  { id: "hexdump", method: "GET", path: "/api/v1/memory/hexdump", label: "Stream Hex Dump", color: "text-purple-400 border-purple-400/20" },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveApiExample(item.id as any)}
+                    className={`w-full text-left p-3 flex flex-col font-mono text-xs border transition-all cursor-pointer ${
+                      activeApiExample === item.id
+                        ? "bg-[#0F1219] border-cyan-400 text-white"
+                        : "bg-transparent border-white/5 hover:bg-white/5 text-white/60 hover:text-white"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className={`text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-[#0B0E14] border ${item.color}`}>
+                        {item.method}
+                      </span>
+                      <span className="text-[10px] text-white/40 font-light">{item.label}</span>
+                    </div>
+                    <span className="text-[10px] text-white/80 select-all truncate">{item.path}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Code display console */}
+              <div className="lg:col-span-8 flex flex-col space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[9px] text-white/40 uppercase tracking-wider block">
+                    {activeApiExample === "list" && "// QUERY ACTIVE VIRTUAL ADDRESS SPACE"}
+                    {activeApiExample === "valloc" && "// ALLOCATE SOVEREIGN MEMORY SEGMENT"}
+                    {activeApiExample === "write" && "// COMMIT DIRECT PAYLOAD WRITE"}
+                    {activeApiExample === "free" && "// FREE VIRTUAL PAGE ASSIGNMENT"}
+                    {activeApiExample === "hexdump" && "// GENERATE PHYSICAL MEMORY DUMP"}
+                  </span>
+                  
+                  <button
+                    onClick={() => {
+                      const curlText = document.getElementById("sls-curl-code")?.innerText || "";
+                      navigator.clipboard.writeText(curlText);
+                      setCopiedCurl(true);
+                      setTimeout(() => setCopiedCurl(false), 2000);
+                    }}
+                    className="flex items-center gap-1.5 font-mono text-[9px] bg-[#0F1219] hover:bg-white/5 border border-white/10 px-2.5 py-1 text-white/70 hover:text-white transition-colors cursor-pointer"
+                  >
+                    {copiedCurl ? (
+                      <>
+                        <Check className="w-3 h-3 text-emerald-400" />
+                        Copied Command!
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3" />
+                        Copy curl
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Preformatted Command Display */}
+                <div className="bg-[#0F1219] border border-white/10 p-4 font-mono text-[11px] text-white overflow-x-auto relative rounded-none select-all scrollbar-thin">
+                  <pre id="sls-curl-code" className="whitespace-pre-wrap break-all leading-relaxed">
+                    {activeApiExample === "list" && (
+                      `curl -X GET \\\n  -H "Authorization: Bearer ${selectedKeySecret || "sls_dev_key_" + (currentUser?.id || "user_dave")}" \\\n  "${window.location.origin}/api/v1/memory"`
+                    )}
+                    {activeApiExample === "valloc" && (
+                      `curl -X POST \\\n  -H "Authorization: Bearer ${selectedKeySecret || "sls_dev_key_" + (currentUser?.id || "user_dave")}" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "name": "LiveAPITable",\n    "type": "DB_TABLE",\n    "sizePages": 4,\n    "data": {\n      "records_sync": true,\n      "origin": "Developer CLI"\n    }\n  }' \\\n  "${window.location.origin}/api/v1/memory/valloc"`
+                    )}
+                    {activeApiExample === "write" && (
+                      `curl -X POST \\\n  -H "Authorization: Bearer ${selectedKeySecret || "sls_dev_key_" + (currentUser?.id || "user_dave")}" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "id": "${objects.filter(o => o.id.startsWith("heap_obj_")).slice(-1)[0]?.id || "heap_obj_imported_sample"}",\n    "data": {\n      "status": "COMPLETED",\n      "last_updated_by": "CLI_API_CLIENT"\n    }\n  }' \\\n  "${window.location.origin}/api/v1/memory/write"`
+                    )}
+                    {activeApiExample === "free" && (
+                      `curl -X DELETE \\\n  -H "Authorization: Bearer ${selectedKeySecret || "sls_dev_key_" + (currentUser?.id || "user_dave")}" \\\n  "${window.location.origin}/api/v1/memory/free/${objects.filter(o => o.id.startsWith("heap_obj_")).slice(-1)[0]?.id || "heap_obj_imported_sample"}"`
+                    )}
+                    {activeApiExample === "hexdump" && (
+                      `curl -X GET \\\n  -H "Authorization: Bearer ${selectedKeySecret || "sls_dev_key_" + (currentUser?.id || "user_dave")}" \\\n  "${window.location.origin}/api/v1/memory/hexdump"`
+                    )}
+                  </pre>
+                </div>
+
+                {/* Mock Response Display */}
+                <div className="space-y-1.5">
+                  <span className="font-mono text-[9px] text-white/40 uppercase tracking-wider block">// EXPECTED API RESPONSE (200 OK)</span>
+                  <div className="bg-[#0B0E14] border border-white/5 p-4 font-mono text-[10px] text-emerald-400 overflow-x-auto h-[160px] scrollbar-thin rounded-none">
+                    <pre className="leading-relaxed">
+                      {activeApiExample === "list" && JSON.stringify({
+                        leaseholder_id: currentUser?.id || "user_dave",
+                        allocated_kb: objects.reduce((sum, o) => sum + o.sizePages, 0) * 4,
+                        metrics: {
+                          total_objects: objects.length,
+                          system_status: "RUNNING",
+                          uptime_seconds: 320
+                        },
+                        objects: objects.slice(0, 2)
+                      }, null, 2)}
+                      {activeApiExample === "valloc" && JSON.stringify({
+                        success: true,
+                        message: "Object 'LiveAPITable' valloc() resolve success",
+                        allocated_segment: {
+                          id: `heap_obj_api_${Date.now()}`,
+                          name: "LiveAPITable",
+                          type: "DB_TABLE",
+                          startAddress: "0x0000_1000_A2B0_0000",
+                          sizePages: 4,
+                          tier: "L2_DRAM",
+                          owner: "App User",
+                          lastAccessTime: new Date().toISOString(),
+                          isCompressed: false,
+                          data: { records_sync: true, origin: "Developer CLI" }
+                        }
+                      }, null, 2)}
+                      {activeApiExample === "write" && JSON.stringify({
+                        success: true,
+                        message: "Data write committed",
+                        updated_segment: {
+                          id: objects.filter(o => o.id.startsWith("heap_obj_")).slice(-1)[0]?.id || "heap_obj_api_172064923412",
+                          name: objects.filter(o => o.id.startsWith("heap_obj_")).slice(-1)[0]?.name || "LiveAPITable",
+                          data: {
+                            status: "COMPLETED",
+                            last_updated_by: "CLI_API_CLIENT",
+                            api_modified_time: new Date().toISOString()
+                          }
+                        }
+                      }, null, 2)}
+                      {activeApiExample === "free" && JSON.stringify({
+                        success: true,
+                        message: `Released segment '${objects.filter(o => o.id.startsWith("heap_obj_")).slice(-1)[0]?.name || "LiveAPITable"}' from active flat virtual address map.`
+                      }, null, 2)}
+                      {activeApiExample === "hexdump" && (
+                        `========================================================================\nSINGLE LEVEL STORAGE OS - SOVEREIGN FLAT ADDRESS SPACE MEMORY DUMP (REST API)\n========================================================================\nLEASEHOLDER ID: ${currentUser?.id || "user_dave"}\nALLOCATED:      ${objects.reduce((sum, o) => sum + o.sizePages, 0) * 4} KB\n========================================================================\n\nSEGMENT 01 //\n  IDENTIFIER: ${objects[0]?.name || "KernelCatalog"}\n  V-ADDRESS:  ${objects[0]?.startAddress || "0x0000_0000_0100_0000"}\n  PAGES:      ${objects[0]?.sizePages || 4} pages\n  PAYLOAD DATA:\n    00000000  7B 22 76 65 72 73 69 6F 6E 22 3A 22 76 39 2E 34  |{"version":"v9.4|`
+                      )}
+                    </pre>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 text-[10px] text-white/30 font-light font-mono italic">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+                  Pro-Tip: Trigger any allocation or free curl from your terminal and watch this visual board update instantly.
+                </div>
+              </div>
             </div>
           </div>
 
