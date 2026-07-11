@@ -28,7 +28,7 @@ export default function SlsAiCoprocessor({
   const promptTemplates = [
     {
       title: "Flat Address Space",
-      prompt: "Explain how IBM OS/400 Flat Single Level Storage (SLS) removes the concept of files and replaces them with direct pointer access. How does this improve database performance?"
+      prompt: "Explain how Flat Single Level Storage (SLS) removes the concept of files and replaces them with direct pointer access. How does this improve database performance?"
     },
     {
       title: "Object-Level Security",

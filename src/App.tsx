@@ -1115,7 +1115,7 @@ export default function App() {
       {/* 2. SUB-HERO EXPLANATORY STRIP (EDITORIAL SIGNATURE PANEL) */}
       <div className="bg-[#0F1219] border-b border-white/10 px-8 py-5 flex flex-col lg:flex-row justify-between gap-6">
         <p className="text-sm font-light text-white/60 leading-relaxed max-w-3xl">
-          Modeled after the legacy IBM AS/400 hardware pointer architecture, <span className="text-white font-medium">SLSOS</span> eliminates the boundaries between storage files and volatile RAM. Every byte resides in a flat, globally addressable virtual memory space, protected by hardware-enforced capabilities and transaction logs.
+          Modeled after the classic hardware pointer architecture, <span className="text-white font-medium">SLSOS</span> eliminates the boundaries between storage files and volatile RAM. Every byte resides in a flat, globally addressable virtual memory space, protected by hardware-enforced capabilities and transaction logs.
         </p>
         <div className="grid grid-cols-2 gap-4 text-[10px] font-mono tracking-wider uppercase text-white/40">
           <div>
@@ -1254,10 +1254,10 @@ export default function App() {
 
       {/* FOOTER */}
       <footer className="h-12 bg-[#0B0E14] border-t border-white/10 flex items-center justify-between px-8 text-[10px] font-mono text-white/30 tracking-widest uppercase">
-        <div>SLSOS ARCHITECT // IBM HARDWARE PERSISTENT SIMULATION</div>
+        <div>SLSOS ARCHITECT // HARDWARE PERSISTENT SIMULATION</div>
         <div className="flex gap-6">
           <span>Build: 4.1.0-EDITORIAL</span>
-          <span>License: MIT/PROPRIETARY</span>
+          <span>License: MIT</span>
         </div>
       </footer>
 
