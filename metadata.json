@@ -1,0 +1,6 @@
+{
+  "name": "Single Level Storage OS Simulator",
+  "description": "Interactive simulator of a Single Level Storage (SLS) OS featuring persistent heap management, object-level security, transactional memory, pointer-based data access, storage tiering, recovery log verification, and microkernel fault isolation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
