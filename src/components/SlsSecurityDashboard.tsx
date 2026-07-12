@@ -108,7 +108,7 @@ export default function SlsSecurityDashboard({
             Security Context Simulator
           </h3>
           <p className="text-white/60 text-xs font-light leading-relaxed mb-6">
-            In an SLS OS, pointer manipulation is hardware-restricted. The memory subsystem checks credentials directly upon address load.
+            In an AeroSLS, pointer manipulation is hardware-restricted. The memory subsystem checks credentials directly upon address load.
           </p>
 
           <div className="space-y-6">

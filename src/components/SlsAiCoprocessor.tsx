@@ -19,7 +19,7 @@ export default function SlsAiCoprocessor({
   const [chatHistory, setChatHistory] = useState<{ sender: "user" | "coprocessor"; text: string }[]>([
     {
       sender: "coprocessor",
-      text: `Welcome to the Single Level Storage OS AI Co-Processor. I am running with **Gemini Pro (Thinking Mode: HIGH)** to analyze virtual address states, database pointer architectures, and microkernel logs.\n\nAsk me anything, or select one of the core OS concept templates below to begin!`
+      text: `Welcome to the AeroSLS AI Co-Processor. I am running with **Gemini Pro (Thinking Mode: HIGH)** to analyze virtual address states, database pointer architectures, and microkernel logs.\n\nAsk me anything, or select one of the core OS concept templates below to begin!`
     }
   ]);
   const [isLoading, setIsLoading] = useState(false);
@@ -76,7 +76,7 @@ export default function SlsAiCoprocessor({
       // Gather system state telemetry to supply as context
       const telemetryContext = `
 Active System Telemetry:
-- Operating System: SLS-OS Simulator (Single Level Storage OS)
+- Operating System: AeroSLS Simulator (AeroSLS)
 - Current Active Security Profile: ${activeUser}
 - Total Heap Objects: ${objects.length}
 - Object Catalog: ${JSON.stringify(objects.map(o => ({ name: o.name, type: o.type, addr: o.startAddress, tier: o.tier, sizePages: o.sizePages })))}
@@ -200,7 +200,7 @@ Please provide a highly detailed, architecturally accurate, and professional res
             </div>
             <button
               onClick={() => setChatHistory([
-                { sender: "coprocessor", text: "Chat history cleared. How can I assist you with SLS OS architecture analysis?" }
+                { sender: "coprocessor", text: "Chat history cleared. How can I assist you with AeroSLS architecture analysis?" }
               ])}
               className="font-mono text-[9px] tracking-widest uppercase text-white/40 hover:text-white border border-white/10 hover:border-white/25 px-2.5 py-1.5 cursor-pointer transition-colors"
             >

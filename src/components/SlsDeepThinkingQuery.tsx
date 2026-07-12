@@ -103,7 +103,7 @@ export default function SlsDeepThinkingQuery({
     try {
       // Build full system context to feed to Gemini
       const memoryContext = {
-        architecture: "Single Level Storage OS (Flat Memory Space, Zero Filesystem, Direct Pointers)",
+        architecture: "AeroSLS (Flat Memory Space, Zero Filesystem, Direct Pointers)",
         metrics: {
           totalAllocatedPages: systemMetrics.totalAllocatedPages,
           pageFaultCount: systemMetrics.pageFaultCount,
@@ -130,7 +130,7 @@ export default function SlsDeepThinkingQuery({
       };
 
       const systemInstruction = `You are the Google Deep Thinking Data Query Engine for the Single Level Storage (SLS) operating system.
-In an SLS OS, there are NO files, NO folders, and NO hierarchical file systems. Everything resides in a unified flat 64-bit virtual address space.
+In an AeroSLS, there are NO files, NO folders, and NO hierarchical file systems. Everything resides in a unified flat 64-bit virtual address space.
 Furthermore, there is NO relational SQL engine. Queries are executed directly against memory pages and pointers using cognitive deep-thinking reasoning.
 
 Analyze the user's natural language query using the provided active system memory space telemetry.

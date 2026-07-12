@@ -1064,13 +1064,13 @@ export default function App() {
           <div className="w-3 h-3 bg-cyan-400 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,211,238,0.5)]"></div>
           <div>
             <div className="flex items-center gap-3">
-              <span className="font-mono text-xs tracking-widest text-cyan-400 uppercase">System Kernel 4.0 // SLSOS</span>
+              <span className="font-mono text-xs tracking-widest text-cyan-400 uppercase">System Kernel 4.0 // AeroSLS</span>
               <span className="text-[9px] font-mono border border-cyan-400/25 text-cyan-400 px-1.5 py-0.5 rounded uppercase tracking-wider">
                 Active Simulator
               </span>
             </div>
             <h1 className="text-3xl font-serif italic text-white tracking-tight leading-tight mt-1 flex items-center gap-2">
-              Single Level Storage OS
+              AeroSLS
             </h1>
             {currentPortalUser && (
               <div className="flex items-center gap-1.5 mt-1 font-mono text-[10px] text-cyan-400 uppercase tracking-widest">
@@ -1115,7 +1115,7 @@ export default function App() {
       {/* 2. SUB-HERO EXPLANATORY STRIP (EDITORIAL SIGNATURE PANEL) */}
       <div className="bg-[#0F1219] border-b border-white/10 px-8 py-5 flex flex-col lg:flex-row justify-between gap-6">
         <p className="text-sm font-light text-white/60 leading-relaxed max-w-3xl">
-          Modeled after the classic hardware pointer architecture, <span className="text-white font-medium">SLSOS</span> eliminates the boundaries between storage files and volatile RAM. Every byte resides in a flat, globally addressable virtual memory space, protected by hardware-enforced capabilities and transaction logs.
+          Modeled after the classic hardware pointer architecture, <span className="text-white font-medium">AeroSLS</span> eliminates the boundaries between storage files and volatile RAM. Every byte resides in a flat, globally addressable virtual memory space, protected by hardware-enforced capabilities and transaction logs.
         </p>
         <div className="grid grid-cols-2 gap-4 text-[10px] font-mono tracking-wider uppercase text-white/40">
           <div>
@@ -1254,7 +1254,7 @@ export default function App() {
 
       {/* FOOTER */}
       <footer className="h-12 bg-[#0B0E14] border-t border-white/10 flex items-center justify-between px-8 text-[10px] font-mono text-white/30 tracking-widest uppercase">
-        <div>SLSOS ARCHITECT // HARDWARE PERSISTENT SIMULATION</div>
+        <div>AeroSLS ARCHITECT // HARDWARE PERSISTENT SIMULATION</div>
         <div className="flex gap-6">
           <span>Build: 4.1.0-EDITORIAL</span>
           <span>License: MIT</span>

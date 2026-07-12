@@ -1,4 +1,4 @@
-// SLS OS Type Definitions for Visualizer and Simulator
+// AeroSLS Type Definitions for Visualizer and Simulator
 
 export enum SlsObjectType {
   DB_TABLE = "DB_TABLE",
