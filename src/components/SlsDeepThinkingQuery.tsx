@@ -101,7 +101,7 @@ export default function SlsDeepThinkingQuery({
     }, 1100);
 
     try {
-      // Build full system context to feed to Gemini
+      // Build full system context for the AI backend
       const memoryContext = {
         architecture: "AeroSLS (Flat Memory Space, Zero Filesystem, Direct Pointers)",
         metrics: {
@@ -156,7 +156,7 @@ ${JSON.stringify(memoryContext, null, 2)}
 
 User Natural Language Query: "${searchPrompt}"`;
 
-      const response = await fetch("/api/gemini/generate", {
+      const response = await fetch("/api/ai/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, systemInstruction }),

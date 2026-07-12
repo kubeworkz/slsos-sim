@@ -19,7 +19,7 @@ export default function SlsAiCoprocessor({
   const [chatHistory, setChatHistory] = useState<{ sender: "user" | "coprocessor"; text: string }[]>([
     {
       sender: "coprocessor",
-      text: `Welcome to the AeroSLS AI Co-Processor. I am running with **Gemini Pro (Thinking Mode: HIGH)** to analyze virtual address states, database pointer architectures, and microkernel logs.\n\nAsk me anything, or select one of the core OS concept templates below to begin!`
+      text: `Welcome to the AeroSLS AI Co-Processor. I am connected to your configured AI backend (Ollama by default — fully local, no data leaves your machine).\n\nI can analyse virtual address states, database pointer architectures, and microkernel logs.\n\nAsk me anything, or select one of the core OS concept templates below to begin!`
     }
   ]);
   const [isLoading, setIsLoading] = useState(false);
@@ -52,7 +52,7 @@ export default function SlsAiCoprocessor({
     setInputPrompt("");
     setIsLoading(true);
 
-    // Initialize simulated thinking sequence to reassure the user during Gemini Pro's high thinking delay
+    // Initialize simulated thinking sequence while waiting for the AI backend
     setThinkingSteps(["Initializing AI Kernel connection...", "Reading active virtual address page tables..."]);
     
     const steps = [
@@ -93,7 +93,7 @@ User Query: ${promptText}
 Please provide a highly detailed, architecturally accurate, and professional response. Frame it from the perspective of an expert operating system architect. Use clear markdown headers, bullet points, and code blocks as needed.
 `;
 
-      const response = await fetch("/api/gemini/generate", {
+      const response = await fetch("/api/ai/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: fullPrompt }),
@@ -243,7 +243,7 @@ Please provide a highly detailed, architecturally accurate, and professional res
                 <div className="p-5 bg-[#0F1219] border border-white/10 w-full space-y-3">
                   <div className="flex items-center gap-2 text-amber-400 text-xs font-mono uppercase tracking-wider font-semibold">
                     <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-                    Gemini Reasoner active...
+                    AI reasoning...
                   </div>
                   
                   {/* Visualizing reasoning steps */}

@@ -1,10 +1,27 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import dotenv from "dotenv";
+import { createProxyMiddleware, fixRequestBody } from "http-proxy-middleware";
 
 dotenv.config();
+
+// Proxy to the live AeroSLS kernel. Uses pathFilter (not app.use path) so the
+// full URL path is preserved and forwarded to the kernel.
+const kernelProxy = createProxyMiddleware({
+  target: "http://localhost:3001",
+  changeOrigin: true,
+  pathFilter: [
+    "/api/scan", "/api/objects", "/api/services", "/api/wal",
+    "/api/tiers", "/api/processes", "/api/query",
+    "/api/valloc", "/api/record", "/api/tx",
+    "/auth/token", "/auth/verify",
+  ],
+  on: {
+    error: (_err: any, _req: any, _res: any, next: any) => { if (next) next(); },
+    proxyReq: fixRequestBody,  // re-attach parsed body for POST/PUT requests
+  },
+});
 
 async function startServer() {
   const app = express();
@@ -12,52 +29,103 @@ async function startServer() {
 
   app.use(express.json());
 
-  // API Route: Gemini integration
-  app.post("/api/gemini/generate", async (req, res) => {
+  // Forward OS-specific routes to the live AeroSLS kernel (port 3001).
+  // pathFilter in kernelProxy handles the route matching (preserves full path).
+  app.use(kernelProxy);
+
+  // ─── AI generation — privacy-first, configurable backend ───────────────────
+  // Set AI_BACKEND in .env to choose the inference engine:
+  //
+  //   AI_BACKEND=ollama   (default) — local Ollama daemon, zero data egress
+  //   AI_BACKEND=claude              — Anthropic Claude API
+  //   AI_BACKEND=openai              — any OpenAI-compatible server (LM Studio,
+  //                                    llama.cpp, vLLM, Ollama /v1/, etc.)
+  //
+  // See .env.example for the full variable reference.
+  app.post("/api/ai/generate", async (req: any, res: any) => {
+    const { prompt, systemInstruction } = req.body;
+    if (!prompt) { res.status(400).json({ error: "prompt required" }); return; }
+
+    const backend = (process.env.AI_BACKEND || "ollama").toLowerCase();
+    const defaultSystem =
+      "You are an expert system architect specialising in the AeroSLS " +
+      "Single Level Storage OS, virtual memory, database integrity, and " +
+      "microkernel fault isolation. All data you receive comes from a local " +
+      "private kernel instance and must be treated as confidential.";
+    const system = systemInstruction || defaultSystem;
+
     try {
-      const { prompt, systemInstruction } = req.body;
-      if (!prompt) {
-        res.status(400).json({ error: "Prompt is required" });
-        return;
-      }
+      let text = "";
 
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
-        res.status(400).json({
-          error: "Gemini API Key is missing or unconfigured. Please configure it in Settings > Secrets."
-        });
-        return;
-      }
-
-      // Lazy initialization of GoogleGenAI
-      const ai = new GoogleGenAI({
-        apiKey: apiKey,
-        httpOptions: {
+      // ── Claude (Anthropic) ────────────────────────────────────────────────
+      if (backend === "claude") {
+        const apiKey = process.env.ANTHROPIC_API_KEY;
+        if (!apiKey || apiKey === "YOUR_ANTHROPIC_API_KEY") {
+          res.status(400).json({ error: "ANTHROPIC_API_KEY not configured in .env" });
+          return;
+        }
+        const model = process.env.AI_MODEL || "claude-opus-4-5";
+        const r = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
           headers: {
-            "User-Agent": "aistudio-build",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
           },
-        },
-      });
+          body: JSON.stringify({
+            model,
+            max_tokens: 2048,
+            system,
+            messages: [{ role: "user", content: prompt }],
+          }),
+        });
+        const d: any = await r.json();
+        if (!r.ok) throw new Error(d.error?.message || JSON.stringify(d));
+        text = d.content?.[0]?.text ?? "";
+      }
 
-      // Query Gemini using gemini-3.1-pro-preview with HIGH thinking level
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: prompt,
-        config: {
-          systemInstruction: systemInstruction || "You are an expert system architect specializing in Single Level Storage Operating Systems, virtual memory architectures, database integrity, and microkernel fault isolation.",
-          thinkingConfig: {
-            thinkingLevel: ThinkingLevel.HIGH,
+      // ── OpenAI-compatible (LM Studio, llama.cpp, vLLM, Ollama /v1/, …) ───
+      else if (backend === "openai") {
+        const baseUrl = process.env.OPENAI_BASE_URL || "http://localhost:11434/v1";
+        const apiKey  = process.env.OPENAI_API_KEY  || "local";
+        const model   = process.env.AI_MODEL        || "llama3.2";
+        const r = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
           },
-        },
-      });
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: system },
+              { role: "user",   content: prompt  },
+            ],
+          }),
+        });
+        const d: any = await r.json();
+        if (!r.ok) throw new Error(d.error?.message || JSON.stringify(d));
+        text = d.choices?.[0]?.message?.content ?? "";
+      }
 
-      res.json({ text: response.text });
+      // ── Ollama native API (default — fully local, no data egress) ─────────
+      else {
+        const baseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+        const model   = process.env.AI_MODEL        || "llama3.2";
+        const r = await fetch(`${baseUrl}/api/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model, system, prompt, stream: false }),
+        });
+        const d: any = await r.json();
+        if (!r.ok) throw new Error(d.error || JSON.stringify(d));
+        text = d.response ?? "";
+      }
+
+      res.json({ text, backend, model: process.env.AI_MODEL || "(default)" });
     } catch (err: any) {
-      console.error("Gemini API Error:", err);
-      res.status(500).json({
-        error: "Failed to generate content from Gemini",
-        details: err.message || String(err),
-      });
+      console.error(`[AI/${backend}]`, err.message);
+      res.status(500).json({ error: err.message || "AI generation failed" });
     }
   });
 
