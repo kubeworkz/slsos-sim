@@ -385,7 +385,12 @@ export default function SlsUserPortal({
     const saved = localStorage.getItem("sls_portal_users");
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed: PortalUser[] = JSON.parse(saved);
+        // Always keep DEFAULT_PORTAL_USERS present — merge in any custom
+        // accounts the user registered on top of the defaults.
+        const defaultIds = new Set(DEFAULT_PORTAL_USERS.map(u => u.id));
+        const customUsers = parsed.filter(u => !defaultIds.has(u.id));
+        return [...DEFAULT_PORTAL_USERS, ...customUsers];
       } catch (e) {
         return DEFAULT_PORTAL_USERS;
       }
