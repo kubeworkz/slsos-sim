@@ -1,7 +1,13 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { SlsObject, Transaction, WalLogEntry, StorageTier } from "../types/sls";
-import { Database, AlertOctagon, RefreshCw, CheckCircle, ArrowRight, Play, Check, Trash, Zap, Download, Plus, Terminal, Save, ShieldAlert, HelpCircle } from "lucide-react";
+import { Database, AlertOctagon, RefreshCw, CheckCircle, ArrowRight, Play, Check, Trash, Zap, Download, Plus, Terminal, Save, ShieldAlert, HelpCircle, Lock } from "lucide-react";
 import { generateChecksum } from "../lib/slsEngine";
+
+interface LockEntry {
+  tx: string;
+  type: string;
+  key: string;
+}
 
 interface SlsTransactionConsoleProps {
   objects: SlsObject[];
@@ -42,6 +48,26 @@ export default function SlsTransactionConsole({
   const [customKey, setCustomKey] = useState<string>("");
   const [customValue, setCustomValue] = useState<string>("");
   const [customDataType, setCustomDataType] = useState<"number" | "string" | "boolean">("number");
+
+  // ── Lock Monitor ──────────────────────────────────────────────────
+  const [locks, setLocks] = useState<LockEntry[]>([]);
+  const [locksLoading, setLocksLoading] = useState(false);
+
+  const fetchLocks = () => {
+    setLocksLoading(true);
+    fetch("/api/locks")
+      .then(r => r.ok ? r.json() : [])
+      .then((data: LockEntry[]) => { setLocks(data); })
+      .catch(() => { setLocks([]); })
+      .finally(() => setLocksLoading(false));
+  };
+
+  useEffect(() => {
+    fetchLocks();
+    const id = setInterval(fetchLocks, 2000);
+    return () => clearInterval(id);
+  }, []);
+  // ─────────────────────────────────────────────────────────────────
 
   const selectedObj = objects.find(o => o.id === selectedObjectId);
 
@@ -142,6 +168,58 @@ export default function SlsTransactionConsole({
 
   return (
     <div className="space-y-8 animate-fadeIn">
+
+      {/* LOCK MONITOR */}
+      <div className="bg-[#0B0E14] border border-white/10 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <Lock className="w-4 h-4 text-amber-400" />
+            <span className="font-mono text-[10px] tracking-widest text-amber-400 uppercase font-semibold">Row Lock Monitor</span>
+            {locks.length > 0 && (
+              <span className="bg-red-900/40 border border-red-700/50 text-red-300 text-[10px] font-mono px-2 py-0.5">
+                {locks.length} ACTIVE
+              </span>
+            )}
+          </div>
+          <button
+            onClick={fetchLocks}
+            className="flex items-center gap-1.5 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors"
+          >
+            <RefreshCw className={`w-3 h-3 ${locksLoading ? "animate-spin" : ""}`} />
+            REFRESH
+          </button>
+        </div>
+
+        {locks.length === 0 ? (
+          <p className="text-white/30 text-xs font-mono text-center py-4">NO ACTIVE LOCKS</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px] font-mono">
+              <thead>
+                <tr className="border-b border-white/10">
+                  <th className="text-left text-white/40 py-2 pr-6 uppercase tracking-widest font-normal">Tx ID</th>
+                  <th className="text-left text-white/40 py-2 pr-6 uppercase tracking-widest font-normal">Type</th>
+                  <th className="text-left text-white/40 py-2 uppercase tracking-widest font-normal">Row Key</th>
+                </tr>
+              </thead>
+              <tbody>
+                {locks.map((lk, i) => (
+                  <tr key={i} className="border-b border-white/5 hover:bg-white/3 transition-colors">
+                    <td className="py-1.5 pr-6 text-cyan-400">{lk.tx}</td>
+                    <td className="py-1.5 pr-6">
+                      <span className={`px-1.5 py-0.5 text-[10px] ${lk.type === "X" ? "bg-red-900/40 text-red-300 border border-red-700/50" : "bg-emerald-900/40 text-emerald-300 border border-emerald-700/50"}`}>
+                        {lk.type === "X" ? "EXCLUSIVE" : "SHARED"}
+                      </span>
+                    </td>
+                    <td className="py-1.5 text-white/70">{lk.key}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* 3-COLUMN CORE TRANSACTION & AUDIT TRACKER */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-8" id="sls-transaction-dashboard">
         
