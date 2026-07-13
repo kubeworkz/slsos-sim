@@ -1,4 +1,5 @@
 import express from "express";
+import http from "http";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
@@ -510,9 +511,18 @@ async function startServer() {
   });
 
   // Vite integration for asset serving
+  // Create the HTTP server first so we can share it with Vite's HMR WebSocket.
+  // This means HMR and Express both live on port 3000 — no extra port to forward.
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === "true"
+          ? false
+          : { server: httpServer },  // share the Express HTTP server — same port, no double-bind
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -524,7 +534,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`[SLS-OS Server] Express running on http://0.0.0.0:${PORT}`);
   });
 }
