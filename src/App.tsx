@@ -35,7 +35,6 @@ import SlsMicrokernelVisualizer from "./components/SlsMicrokernelVisualizer";
 import SlsAiCoprocessor from "./components/SlsAiCoprocessor";
 import SlsSystemHealth from "./components/SlsSystemHealth";
 import SlsUserPortal from "./components/SlsUserPortal";
-import SlsDeepThinkingQuery from "./components/SlsDeepThinkingQuery";
 
 import { 
   Layers, 
@@ -51,8 +50,7 @@ import {
   ExternalLink,
   Plus,
   User,
-  LogOut,
-  Brain
+  LogOut
 } from "lucide-react";
 
 const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
@@ -140,7 +138,7 @@ const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
 
 export default function App() {
   // Navigation tabs
-  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "coprocessor" | "portal" | "deepthink">("portal");
+  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "coprocessor" | "portal">("portal");
 
   // Portal User Subscription State
   const [currentPortalUser, setCurrentPortalUser] = useState<PortalUser | null>(() => {
@@ -1138,8 +1136,7 @@ export default function App() {
             { key: "transactions", label: "03 // Transactional Log", icon: <Database className="w-3.5 h-3.5" /> },
             { key: "microkernel", label: "04 // Microkernel Bus", icon: <Cpu className="w-3.5 h-3.5" /> },
             { key: "coprocessor", label: "05 // AI Co-Processor", icon: <Sparkles className="w-3.5 h-3.5" /> },
-            { key: "deepthink", label: "06 // Deep Thinking Query", icon: <Brain className="w-3.5 h-3.5" /> },
-            { key: "portal", label: "07 // Sovereign Portal", icon: <User className="w-3.5 h-3.5" /> },
+            { key: "portal", label: "06 // Sovereign Portal", icon: <User className="w-3.5 h-3.5" /> },
           ].map((tab) => (
             <button
               key={tab.key}
@@ -1240,14 +1237,6 @@ export default function App() {
               />
             )}
 
-            {activeTab === "deepthink" && (
-              <SlsDeepThinkingQuery
-                objects={objects}
-                services={services}
-                systemMetrics={systemMetrics}
-                activeUser={activeUser}
-              />
-            )}
           </>
         )}
       </main>
