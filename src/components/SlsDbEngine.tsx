@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Database, BookOpen, BarChart3, Table2, RefreshCw, Play, Plus, Trash2, ChevronDown, ChevronRight } from "lucide-react";
+import { Database, BookOpen, BarChart3, Table2, RefreshCw, Play, Plus, Trash2, ChevronDown, ChevronRight, Upload, Terminal } from "lucide-react";
 import { SlsObject, SlsUser } from "../types/sls";
 
 interface SlsDbEngineProps {
@@ -7,7 +7,7 @@ interface SlsDbEngineProps {
   activeUser: SlsUser | null;
 }
 
-type DbTab = "schema" | "journal" | "mqt" | "aggregate";
+type DbTab = "schema" | "journal" | "mqt" | "aggregate" | "programs";
 
 // ─── Shared fetch helper ──────────────────────────────────────────────────────
 async function kFetch(path: string, opts?: RequestInit) {
@@ -640,6 +640,7 @@ const DB_TABS: { key: DbTab; label: string; icon: React.ReactNode }[] = [
   { key: "journal",   label: "Journal Viewer",     icon: <BookOpen className="w-3.5 h-3.5" /> },
   { key: "mqt",       label: "MQT Dashboard",      icon: <BarChart3 className="w-3.5 h-3.5" /> },
   { key: "aggregate", label: "Query Builder",      icon: <Play className="w-3.5 h-3.5" /> },
+  { key: "programs",  label: "Program Manager",    icon: <Upload className="w-3.5 h-3.5" /> },
 ];
 
 export default function SlsDbEngine({ objects, activeUser }: SlsDbEngineProps) {
@@ -682,6 +683,7 @@ export default function SlsDbEngine({ objects, activeUser }: SlsDbEngineProps) {
         {dbTab === "journal"   && <JournalViewer />}
         {dbTab === "mqt"       && <MqtDashboard />}
         {dbTab === "aggregate" && <AggregateQueryBuilder objects={objects} />}
+        {dbTab === "programs"  && <ProgramManager />}
       </div>
     </div>
   );
