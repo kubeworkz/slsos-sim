@@ -19,7 +19,7 @@ export default function SlsAiCoprocessor({
   const [chatHistory, setChatHistory] = useState<{ sender: "user" | "coprocessor"; text: string }[]>([
     {
       sender: "coprocessor",
-      text: `Welcome to the AeroSLS AI Co-Processor. I am connected to your configured AI backend (Ollama by default — fully local, no data leaves your machine).\n\nI can analyse virtual address states, database pointer architectures, and microkernel logs.\n\nAsk me anything, or select one of the core OS concept templates below to begin!`
+      text: `Welcome to the AeroSLS AI Assistant. I am connected to your configured AI backend (Ollama by default — fully local, no data leaves your machine).\n\nI can analyse virtual address states, database pointer architectures, and microkernel logs.\n\nAsk me anything, or select one of the core OS concept templates below to begin!`
     }
   ]);
   const [isLoading, setIsLoading] = useState(false);
@@ -117,7 +117,7 @@ Please provide a highly detailed, architecturally accurate, and professional res
       clearInterval(interval);
       setChatHistory(prev => [
         ...prev,
-        { sender: "coprocessor", text: `⚠️ **Connection Error:** Failed to establish communication pipeline with the AI co-processor. Details: ${err.message || err}` }
+          { sender: "coprocessor", text: `⚠️ **Connection Error:** Failed to establish communication pipeline with the AI assistant. Details: ${err.message || err}` }
       ]);
     } finally {
       setIsLoading(false);
@@ -192,9 +192,9 @@ Please provide a highly detailed, architecturally accurate, and professional res
             <div className="flex items-center gap-3">
               <Sparkles className="text-amber-400 w-5 h-5 animate-pulse" />
               <div>
-                <span className="font-mono text-[10px] tracking-widest text-amber-400 uppercase font-semibold">Cognitive Kernel Extension</span>
+                <span className="font-mono text-[10px] tracking-widest text-amber-400 uppercase font-semibold">AI Assistant</span>
                 <h3 className="text-2xl font-serif italic text-white mt-1">
-                  AI Kernel Co-Processor
+                  AI Assistant
                 </h3>
               </div>
             </div>
@@ -295,7 +295,7 @@ Please provide a highly detailed, architecturally accurate, and professional res
             Architecture Guides
           </h3>
           <p className="text-white/60 text-xs font-light leading-relaxed mb-6">
-            Click on any conceptual card below. The Co-Processor will evaluate our current active memory simulation state and draft a precise, deep-dive architectural analysis!
+            Click on any conceptual card below. The AI Assistant will evaluate our current active memory simulation state and draft a precise, deep-dive architectural analysis!
           </p>
 
           <div className="space-y-3.5">
