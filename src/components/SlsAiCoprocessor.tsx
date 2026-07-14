@@ -290,7 +290,7 @@ Please provide a highly detailed, architecturally accurate, and professional res
       {/* RIGHT COLUMN: EDUCATIONAL TEMPLATE SELECTORS */}
       <div className="bg-[#0B0E14] p-8 border border-white/10 flex flex-col justify-between h-[560px]">
         <div>
-          <span className="font-mono text-[10px] tracking-widest text-amber-400 uppercase font-semibold">Socratic Scaffolds</span>
+          <span className="font-mono text-[10px] tracking-widest text-amber-400 uppercase font-semibold">OS Concept Templates</span>
           <h3 className="text-xl font-serif italic text-white mt-1 border-b border-white/10 pb-4 mb-6">
             Architecture Guides
           </h3>
