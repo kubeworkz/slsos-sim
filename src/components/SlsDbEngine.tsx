@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { Database, BookOpen, BarChart3, Table2, RefreshCw, Play, Plus, Trash2, ChevronDown, ChevronRight, Upload, Terminal } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Database, BookOpen, BarChart3, Table2, RefreshCw, Play, Plus, Trash2, ChevronDown, ChevronRight, Upload, Terminal, FileText, Download } from "lucide-react";
 import { SlsObject, SlsUser } from "../types/sls";
 
 interface SlsDbEngineProps {
@@ -7,7 +7,7 @@ interface SlsDbEngineProps {
   activeUser: SlsUser | null;
 }
 
-type DbTab = "schema" | "journal" | "mqt" | "aggregate" | "programs";
+type DbTab = "schema" | "journal" | "mqt" | "aggregate" | "programs" | "streams";
 
 // ─── Shared fetch helper ──────────────────────────────────────────────────────
 async function kFetch(path: string, opts?: RequestInit) {
@@ -794,14 +794,184 @@ function ProgramManager() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 6. STREAM LIBRARY
+// ─────────────────────────────────────────────────────────────────────────────
+interface StreamEntry { name: string; mime_type: string; size: number; }
+
+function StreamLibrary() {
+  const [streams, setStreams]     = useState<StreamEntry[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [msg, setMsg]             = useState("");
+  // upload state
+  const [upName, setUpName]       = useState("");
+  const [upMime, setUpMime]       = useState("application/octet-stream");
+  const [upHex, setUpHex]         = useState("");
+  const [upSize, setUpSize]       = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const fileRef                   = useRef<HTMLInputElement>(null);
+
+  const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 5000); };
+  const tok   = () => localStorage.getItem("sls_token") || "";
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { const d = await kFetch("/api/streams"); setStreams(d.streams || []); }
+    catch (_) {}
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Convert selected file → hex string for upload
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Suggest a safe object name from the filename
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 48);
+    setUpName(safeName);
+    setUpMime(file.type || "application/octet-stream");
+    setUpSize(file.size);
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const buf  = ev.target?.result as ArrayBuffer;
+      const bytes = new Uint8Array(buf);
+      const hex  = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+      setUpHex(hex);
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const handleUpload = async () => {
+    if (!upName || !upHex) return;
+    setUploading(true);
+    // 1. Create the stream object
+    const cr = await kFetch("/api/stream/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok()}` },
+      body: JSON.stringify({ name: upName, mime: upMime }),
+    });
+    if (cr.ok !== "true" && cr.error !== "already exists") {
+      flash(`✖ Create failed: ${cr.error}`); setUploading(false); return;
+    }
+    // 2. Upload in 1024-byte (2048 hex-char) chunks
+    const CHUNK = 2048;
+    for (let offset = 0; offset < upHex.length; offset += CHUNK) {
+      const slice  = upHex.slice(offset, offset + CHUNK);
+      const isLast = offset + CHUNK >= upHex.length ? 1 : 0;
+      const ur = await kFetch("/api/stream/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok()}` },
+        body: JSON.stringify({ name: upName, hex: slice, offset: offset / 2, last: isLast }),
+      });
+      if (ur.ok !== "true") { flash(`✖ Upload failed at offset ${offset / 2}: ${ur.error}`); setUploading(false); return; }
+    }
+    flash(`✔ Stored '${upName}' (${upSize.toLocaleString()} bytes)`);
+    setUpHex(""); setUpSize(0); if (fileRef.current) fileRef.current.value = "";
+    load();
+    setUploading(false);
+  };
+
+  const handleDownload = async (name: string, mime: string) => {
+    try {
+      const r = await fetch(`/api/stream/${name}`);
+      if (!r.ok) { flash(`✖ Download failed: ${r.status}`); return; }
+      const blob = await r.blob();
+      const url  = URL.createObjectURL(new Blob([blob], { type: mime }));
+      const a    = document.createElement("a");
+      a.href = url; a.download = name; a.click();
+      URL.revokeObjectURL(url);
+    } catch (_) { flash("✖ Download error"); }
+  };
+
+  const fmtSize = (n: number) =>
+    n < 1024 ? `${n} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KB` : `${(n/1048576).toFixed(1)} MB`;
+
+  return (
+    <div className="space-y-8">
+      {msg && <div className="bg-[#0d1117] border border-white/10 px-4 py-2 text-[11px] font-mono text-white/70">{msg}</div>}
+
+      {/* Stream list */}
+      <div className="bg-[#0B0E14] border border-white/10 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <span className="font-mono text-[10px] tracking-widest text-cyan-400 uppercase font-semibold">Stored Streams</span>
+          <button onClick={load} className="flex items-center gap-1.5 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors">
+            <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> REFRESH
+          </button>
+        </div>
+        {streams.length === 0 ? (
+          <p className="text-white/30 text-xs font-mono text-center py-4">NO STREAMS — upload a file below</p>
+        ) : (
+          <table className="w-full text-[11px] font-mono">
+            <thead>
+              <tr className="border-b border-white/10">
+                {["Name","MIME Type","Size",""].map(h => (
+                  <th key={h} className="text-left text-white/40 py-2 pr-5 uppercase tracking-widest font-normal">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {streams.map(s => (
+                <tr key={s.name} className="border-b border-white/5 hover:bg-white/3 transition-colors">
+                  <td className="py-1.5 pr-5 text-white font-semibold">{s.name}</td>
+                  <td className="py-1.5 pr-5 text-white/50 text-[10px]">{s.mime_type}</td>
+                  <td className="py-1.5 pr-5 text-white/60">{s.size > 0 ? fmtSize(s.size) : "—"}</td>
+                  <td className="py-1.5">
+                    {s.size > 0 && (
+                      <button onClick={() => handleDownload(s.name, s.mime_type)}
+                        className="flex items-center gap-1 text-[10px] font-mono text-cyan-400 hover:text-cyan-300 transition-colors">
+                        <Download className="w-3 h-3" /> DOWNLOAD
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Upload panel */}
+      <div className="bg-[#0B0E14] border border-white/10 p-6 space-y-4">
+        <span className="font-mono text-[10px] tracking-widest text-amber-400 uppercase font-semibold flex items-center gap-2">
+          <FileText className="w-3.5 h-3.5" /> Upload File
+        </span>
+        <p className="text-[10px] text-white/40 font-mono leading-relaxed">
+          Text files, PDFs, images — any binary content up to 64 KiB. Stored as an <code>OBJ_TYPE_STREAM</code> object; journaled and indexed automatically.
+        </p>
+        <input ref={fileRef} type="file" onChange={handleFileChange}
+          className="w-full text-[11px] font-mono text-white/60 bg-[#0d1117] border border-white/10 px-3 py-2 file:mr-3 file:bg-amber-500/10 file:border file:border-amber-500/30 file:text-amber-300 file:text-[10px] file:font-mono file:uppercase file:tracking-widest file:px-3 file:py-1 file:cursor-pointer" />
+        {upSize > 0 && (
+          <div className="text-[10px] font-mono text-white/50 space-y-1">
+            <div>Name: <span className="text-white/80">{upName}</span></div>
+            <div>MIME: <span className="text-white/80">{upMime}</span></div>
+            <div>Size: <span className={`${upSize > 65536 ? "text-red-400" : "text-emerald-400"}`}>{fmtSize(upSize)}{upSize > 65536 ? " — exceeds 64 KiB limit" : ""}</span></div>
+          </div>
+        )}
+        <div className="flex gap-3">
+          <input value={upName} onChange={e => setUpName(e.target.value)} placeholder="object name (auto-filled)"
+            className="flex-1 bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
+          <input value={upMime} onChange={e => setUpMime(e.target.value)} placeholder="mime type"
+            className="flex-1 bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
+        </div>
+        <button onClick={handleUpload} disabled={!upHex || uploading || upSize > 65536}
+          className="w-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-mono tracking-widest uppercase py-2 hover:bg-amber-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+          {uploading ? "UPLOADING…" : "STORE STREAM"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN CONTAINER
 // ─────────────────────────────────────────────────────────────────────────────
 const DB_TABS: { key: DbTab; label: string; icon: React.ReactNode }[] = [
-  { key: "schema",    label: "Schema Explorer",    icon: <Database className="w-3.5 h-3.5" /> },
-  { key: "journal",   label: "Journal Viewer",     icon: <BookOpen className="w-3.5 h-3.5" /> },
+  { key: "schema",    label: "Schema Explorer",    icon: <Database  className="w-3.5 h-3.5" /> },
+  { key: "journal",   label: "Journal Viewer",     icon: <BookOpen  className="w-3.5 h-3.5" /> },
   { key: "mqt",       label: "MQT Dashboard",      icon: <BarChart3 className="w-3.5 h-3.5" /> },
-  { key: "aggregate", label: "Query Builder",      icon: <Play className="w-3.5 h-3.5" /> },
-  { key: "programs",  label: "Program Manager",    icon: <Upload className="w-3.5 h-3.5" /> },
+  { key: "aggregate", label: "Query Builder",      icon: <Play      className="w-3.5 h-3.5" /> },
+  { key: "programs",  label: "Program Manager",    icon: <Upload    className="w-3.5 h-3.5" /> },
+  { key: "streams",   label: "Stream Library",     icon: <FileText  className="w-3.5 h-3.5" /> },
 ];
 
 export default function SlsDbEngine({ objects, activeUser }: SlsDbEngineProps) {
@@ -845,6 +1015,7 @@ export default function SlsDbEngine({ objects, activeUser }: SlsDbEngineProps) {
         {dbTab === "mqt"       && <MqtDashboard />}
         {dbTab === "aggregate" && <AggregateQueryBuilder objects={objects} />}
         {dbTab === "programs"  && <ProgramManager />}
+        {dbTab === "streams"   && <StreamLibrary />}
       </div>
     </div>
   );
