@@ -633,6 +633,167 @@ function AggregateQueryBuilder({ objects }: { objects: SlsObject[] }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 5. PROGRAM MANAGER
+// ─────────────────────────────────────────────────────────────────────────────
+interface ProgramEntry {
+  name: string; vaddr: string; pages: number;
+  tier: string; binary: string; binary_bytes: number; format: string;
+}
+
+function ProgramManager() {
+  const [programs, setPrograms]   = useState<ProgramEntry[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [newName, setNewName]     = useState("");
+  const [newPages, setNewPages]   = useState("2");
+  const [upName, setUpName]       = useState("");
+  const [upHex, setUpHex]         = useState("");
+  const [spawnName, setSpawnName] = useState("");
+  const [lastPid, setLastPid]     = useState<number | null>(null);
+  const [msg, setMsg]             = useState("");
+
+  const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 4000); };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { const d = await kFetch("/api/programs"); setPrograms(d.programs || []); }
+    catch (_) {}
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const tok = () => localStorage.getItem("sls_token") || "";
+
+  const handleCreate = async () => {
+    if (!newName || !newPages) return;
+    const r = await kFetch("/api/program/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok()}` },
+      body: JSON.stringify({ name: newName, pages: parseInt(newPages, 10) }),
+    });
+    if (r.ok === "true") { flash(`✔ Created '${newName}'`); load(); setNewName(""); }
+    else flash(`✖ ${r.error || "create failed"}`);
+  };
+
+  const handleUpload = async () => {
+    if (!upName || !upHex) return;
+    const CHUNK = 2048;
+    for (let offset = 0; offset < upHex.length; offset += CHUNK) {
+      const slice = upHex.slice(offset, offset + CHUNK);
+      const isLast = offset + CHUNK >= upHex.length ? 1 : 0;
+      const r = await kFetch("/api/program/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok()}` },
+        body: JSON.stringify({ name: upName, hex: slice, offset: offset / 2, last: isLast }),
+      });
+      if (r.ok !== "true") { flash(`✖ Upload failed: ${r.error}`); return; }
+    }
+    flash(`✔ Uploaded ${upHex.length / 2} bytes to '${upName}'`);
+    load(); setUpHex("");
+  };
+
+  const handleSpawn = async () => {
+    if (!spawnName) return;
+    const r = await kFetch("/api/program/spawn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok()}` },
+      body: JSON.stringify({ name: spawnName }),
+    });
+    if (r.ok === "true") { setLastPid(r.pid); flash(`✔ Spawned '${spawnName}' as PID ${r.pid}`); load(); }
+    else flash(`✖ ${r.error || "spawn failed"}`);
+  };
+
+  const statusColor = (s: string) =>
+    s === "running" ? "text-emerald-400" : s === "ready" ? "text-cyan-400" : s === "created" ? "text-amber-400" : "text-white/40";
+
+  return (
+    <div className="space-y-8">
+      {msg && <div className="bg-[#0d1117] border border-white/10 px-4 py-2 text-[11px] font-mono text-white/70">{msg}</div>}
+
+      <div className="bg-[#0B0E14] border border-white/10 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <span className="font-mono text-[10px] tracking-widest text-cyan-400 uppercase font-semibold">Registered Programs</span>
+          <button onClick={load} className="flex items-center gap-1.5 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors">
+            <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> REFRESH
+          </button>
+        </div>
+        {programs.length === 0 ? (
+          <p className="text-white/30 text-xs font-mono text-center py-4">NO PROGRAM OBJECTS</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px] font-mono">
+              <thead>
+                <tr className="border-b border-white/10">
+                  {["Name","Pages","Tier","Binary","Bytes","Format","Status"].map(h => (
+                    <th key={h} className="text-left text-white/40 py-2 pr-5 uppercase tracking-widest font-normal">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {programs.map(p => (
+                  <tr key={p.name} className="border-b border-white/5 hover:bg-white/3 transition-colors">
+                    <td className="py-1.5 pr-5 text-white font-semibold">{p.name}</td>
+                    <td className="py-1.5 pr-5 text-white/60">{p.pages}</td>
+                    <td className="py-1.5 pr-5 text-white/50 text-[10px]">{p.tier}</td>
+                    <td className="py-1.5 pr-5">
+                      <span className={`text-[10px] px-1.5 py-0.5 border ${p.binary === "yes" ? "border-emerald-700/50 text-emerald-300 bg-emerald-900/30" : "border-white/10 text-white/30"}`}>
+                        {p.binary === "yes" ? "LOADED" : "EMPTY"}
+                      </span>
+                    </td>
+                    <td className="py-1.5 pr-5 text-white/60">{p.binary_bytes > 0 ? `${p.binary_bytes}B` : "—"}</td>
+                    <td className="py-1.5 pr-5 text-white/50 text-[10px]">{p.format !== "none" ? p.format : "—"}</td>
+                    <td className={`py-1.5 text-[10px] uppercase ${statusColor((p as any).status || "")}`}>{(p as any).status || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="bg-[#0B0E14] border border-white/10 p-6 space-y-4">
+          <span className="font-mono text-[10px] tracking-widest text-amber-400 uppercase font-semibold flex items-center gap-2">
+            <Plus className="w-3.5 h-3.5" /> Create Program Object
+          </span>
+          <p className="text-[10px] text-white/40 font-mono leading-relaxed">Allocates an OBJ_TYPE_PROGRAM entry with journaled metadata seeds.</p>
+          <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="program name"
+            className="w-full bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
+          <input value={newPages} onChange={e => setNewPages(e.target.value)} placeholder="pages (default 2)" type="number" min="1" max="64"
+            className="w-full bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
+          <button onClick={handleCreate} className="w-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-mono tracking-widest uppercase py-2 hover:bg-amber-500/20 transition-colors">ALLOCATE</button>
+        </div>
+
+        <div className="bg-[#0B0E14] border border-white/10 p-6 space-y-4">
+          <span className="font-mono text-[10px] tracking-widest text-cyan-400 uppercase font-semibold flex items-center gap-2">
+            <Upload className="w-3.5 h-3.5" /> Upload Binary
+          </span>
+          <p className="text-[10px] text-white/40 font-mono leading-relaxed">Hex-encoded flat binary or ELF64. Auto-chunked. Fires DB1–DB7 hooks on completion.</p>
+          <input value={upName} onChange={e => setUpName(e.target.value)} placeholder="program name"
+            className="w-full bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
+          <textarea value={upHex} onChange={e => setUpHex(e.target.value)} placeholder="hex bytes (e.g. 4889c748c7c0...)"
+            rows={4} className="w-full bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/60 outline-none focus:border-cyan-500/50 resize-none" />
+          <button onClick={handleUpload} className="w-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-[10px] font-mono tracking-widest uppercase py-2 hover:bg-cyan-500/20 transition-colors">UPLOAD</button>
+        </div>
+
+        <div className="bg-[#0B0E14] border border-white/10 p-6 space-y-4">
+          <span className="font-mono text-[10px] tracking-widest text-emerald-400 uppercase font-semibold flex items-center gap-2">
+            <Terminal className="w-3.5 h-3.5" /> Spawn Process
+          </span>
+          <p className="text-[10px] text-white/40 font-mono leading-relaxed">Maps binary into a fresh PML4 and enters Ring-3. Updates status→running + last_pid.</p>
+          <input value={spawnName} onChange={e => setSpawnName(e.target.value)} placeholder="program name"
+            className="w-full bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
+          {lastPid !== null && (
+            <div className="bg-emerald-900/20 border border-emerald-700/30 px-3 py-2 text-[11px] font-mono text-emerald-300">Last PID: {lastPid}</div>
+          )}
+          <button onClick={handleSpawn} className="w-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[10px] font-mono tracking-widest uppercase py-2 hover:bg-emerald-500/20 transition-colors">SPAWN</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN CONTAINER
 // ─────────────────────────────────────────────────────────────────────────────
 const DB_TABS: { key: DbTab; label: string; icon: React.ReactNode }[] = [
