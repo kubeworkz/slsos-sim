@@ -1136,9 +1136,9 @@ export default function App() {
             { key: "security",     label: "Protection Rings",   icon: <ShieldCheck className="w-3.5 h-3.5" /> },
             { key: "transactions", label: "Transactional Log",  icon: <Database    className="w-3.5 h-3.5" /> },
             { key: "microkernel",  label: "Microkernel Bus",    icon: <Cpu         className="w-3.5 h-3.5" /> },
-            { key: "coprocessor",  label: "AI Co-Processor",    icon: <Sparkles    className="w-3.5 h-3.5" /> },
+            { key: "coprocessor",  label: "AI Assistant",       icon: <Sparkles    className="w-3.5 h-3.5" /> },
             { key: "dbengine",     label: "DB Engine",          icon: <Database    className="w-3.5 h-3.5" /> },
-            { key: "portal",       label: "Sovereign Portal",   icon: <User        className="w-3.5 h-3.5" /> },
+            { key: "portal",       label: "User Portal",        icon: <User        className="w-3.5 h-3.5" /> },
           ].map((tab) => (
             <button
               key={tab.key}
