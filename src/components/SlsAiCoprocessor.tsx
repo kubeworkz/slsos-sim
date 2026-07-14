@@ -99,6 +99,20 @@ Please provide a highly detailed, architecturally accurate, and professional res
         body: JSON.stringify({ prompt: fullPrompt }),
       });
 
+      // Guard: if the response is not JSON (e.g. nginx returned HTML because
+      // the Express server isn't running), surface a clear config message.
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        clearInterval(interval);
+        setChatHistory(prev => [...prev, {
+          sender: "coprocessor",
+          text: "⚠️ **AI backend not available.** The AI service requires the Express server (port 3000) to be running with an AI backend configured.\n\n**To enable:**\n1. Set `AI_BACKEND=ollama` (or `claude` / `openai`) in `/home/ubuntu/slsos-sim/.env`\n2. Start the Express server: `cd /home/ubuntu/slsos-sim && npm run dev`\n\nThe rest of the Navigator (kernel API, DB Engine, Stream Library) works without it."
+        }]);
+        setIsLoading(false);
+        setThinkingSteps([]);
+        return;
+      }
+
       const data = await response.json();
       clearInterval(interval);
 
