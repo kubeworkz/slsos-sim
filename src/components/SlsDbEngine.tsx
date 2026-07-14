@@ -936,7 +936,7 @@ function StreamLibrary() {
           <FileText className="w-3.5 h-3.5" /> Upload File
         </span>
         <p className="text-[10px] text-white/40 font-mono leading-relaxed">
-          Text files, PDFs, images — any binary content up to 64 KiB. Stored as an <code>OBJ_TYPE_STREAM</code> object; journaled and indexed automatically.
+          Text files, PDFs, images — any binary content up to 1 MiB. Stored as an <code>OBJ_TYPE_STREAM</code> object; journaled and indexed automatically.
         </p>
         <input ref={fileRef} type="file" onChange={handleFileChange}
           className="w-full text-[11px] font-mono text-white/60 bg-[#0d1117] border border-white/10 px-3 py-2 file:mr-3 file:bg-amber-500/10 file:border file:border-amber-500/30 file:text-amber-300 file:text-[10px] file:font-mono file:uppercase file:tracking-widest file:px-3 file:py-1 file:cursor-pointer" />
@@ -944,7 +944,7 @@ function StreamLibrary() {
           <div className="text-[10px] font-mono text-white/50 space-y-1">
             <div>Name: <span className="text-white/80">{upName}</span></div>
             <div>MIME: <span className="text-white/80">{upMime}</span></div>
-            <div>Size: <span className={`${upSize > 65536 ? "text-red-400" : "text-emerald-400"}`}>{fmtSize(upSize)}{upSize > 65536 ? " — exceeds 64 KiB limit" : ""}</span></div>
+            <div>Size: <span className={`${upSize > 1048576 ? "text-red-400" : "text-emerald-400"}`}>{fmtSize(upSize)}{upSize > 1048576 ? " — exceeds 1 MiB limit" : ""}</span></div>
           </div>
         )}
         <div className="flex gap-3">
@@ -953,7 +953,7 @@ function StreamLibrary() {
           <input value={upMime} onChange={e => setUpMime(e.target.value)} placeholder="mime type"
             className="flex-1 bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
         </div>
-        <button onClick={handleUpload} disabled={!upHex || uploading || upSize > 65536}
+        <button onClick={handleUpload} disabled={!upHex || uploading || upSize > 1048576}
           className="w-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-mono tracking-widest uppercase py-2 hover:bg-amber-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
           {uploading ? "UPLOADING…" : "STORE STREAM"}
         </button>
