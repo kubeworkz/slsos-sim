@@ -1132,13 +1132,13 @@ export default function App() {
       {currentPortalUser && (
         <nav className="bg-[#0B0E14] border-b border-white/10 px-8 flex flex-wrap gap-0">
           {[
-            { key: "memory", label: "01 // Address Space Map", icon: <Layers className="w-3.5 h-3.5" /> },
-            { key: "security", label: "02 // Protection Rings", icon: <ShieldCheck className="w-3.5 h-3.5" /> },
-            { key: "transactions", label: "03 // Transactional Log", icon: <Database className="w-3.5 h-3.5" /> },
-            { key: "microkernel", label: "04 // Microkernel Bus", icon: <Cpu className="w-3.5 h-3.5" /> },
-            { key: "coprocessor", label: "05 // AI Co-Processor", icon: <Sparkles className="w-3.5 h-3.5" /> },
-            { key: "dbengine",    label: "06 // DB Engine",        icon: <Database className="w-3.5 h-3.5" /> },
-            { key: "portal",      label: "07 // Sovereign Portal", icon: <User className="w-3.5 h-3.5" /> },
+            { key: "memory",       label: "Address Space Map",  icon: <Layers      className="w-3.5 h-3.5" /> },
+            { key: "security",     label: "Protection Rings",   icon: <ShieldCheck className="w-3.5 h-3.5" /> },
+            { key: "transactions", label: "Transactional Log",  icon: <Database    className="w-3.5 h-3.5" /> },
+            { key: "microkernel",  label: "Microkernel Bus",    icon: <Cpu         className="w-3.5 h-3.5" /> },
+            { key: "coprocessor",  label: "AI Co-Processor",    icon: <Sparkles    className="w-3.5 h-3.5" /> },
+            { key: "dbengine",     label: "DB Engine",          icon: <Database    className="w-3.5 h-3.5" /> },
+            { key: "portal",       label: "Sovereign Portal",   icon: <User        className="w-3.5 h-3.5" /> },
           ].map((tab) => (
             <button
               key={tab.key}
