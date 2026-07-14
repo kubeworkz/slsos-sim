@@ -799,16 +799,20 @@ function ProgramManager() {
 interface StreamEntry { name: string; mime_type: string; size: number; }
 
 function StreamLibrary() {
-  const [streams, setStreams]     = useState<StreamEntry[]>([]);
-  const [loading, setLoading]     = useState(true);
-  const [msg, setMsg]             = useState("");
-  // upload state
-  const [upName, setUpName]       = useState("");
-  const [upMime, setUpMime]       = useState("application/octet-stream");
-  const [upHex, setUpHex]         = useState("");
-  const [upSize, setUpSize]       = useState(0);
-  const [uploading, setUploading] = useState(false);
-  const fileRef                   = useRef<HTMLInputElement>(null);
+  const [streams, setStreams]       = useState<StreamEntry[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [msg, setMsg]               = useState("");
+  const [upName, setUpName]         = useState("");
+  const [upMime, setUpMime]         = useState("application/octet-stream");
+  const [upSize, setUpSize]         = useState(0);
+  const [upFile, setUpFile]         = useState<File | null>(null);
+  const [upProgress, setUpProgress] = useState(0);   // 0–100
+  const [uploading, setUploading]   = useState(false);
+  const fileRef                     = useRef<HTMLInputElement>(null);
+
+  // 16 KiB binary per request = 32 KiB hex, safely under the 64 KiB req_buf
+  const BINARY_CHUNK = 16384;
+  const MAX_FILE_SIZE = 64 * 1024 * 1024; // 64 MiB (STREAM_MAX_FRAMES × 4 KiB)
 
   const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 5000); };
   const tok   = () => localStorage.getItem("sls_token") || "";
@@ -822,28 +826,22 @@ function StreamLibrary() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Convert selected file → hex string for upload
+  // On file select: store File reference only — no full read into memory
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    // Suggest a safe object name from the filename
-    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 48);
-    setUpName(safeName);
+    setUpName(file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 48));
     setUpMime(file.type || "application/octet-stream");
     setUpSize(file.size);
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const buf  = ev.target?.result as ArrayBuffer;
-      const bytes = new Uint8Array(buf);
-      const hex  = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
-      setUpHex(hex);
-    };
-    reader.readAsArrayBuffer(file);
+    setUpFile(file);
+    setUpProgress(0);
   };
 
   const handleUpload = async () => {
-    if (!upName || !upHex) return;
+    if (!upFile || !upName || upSize > MAX_FILE_SIZE) return;
     setUploading(true);
+    setUpProgress(0);
+
     // 1. Create the stream object
     const cr = await kFetch("/api/stream/create", {
       method: "POST",
@@ -853,20 +851,31 @@ function StreamLibrary() {
     if (cr.ok !== "true" && cr.error !== "already exists") {
       flash(`✖ Create failed: ${cr.error}`); setUploading(false); return;
     }
-    // 2. Upload in 1024-byte (2048 hex-char) chunks
-    const CHUNK = 2048;
-    for (let offset = 0; offset < upHex.length; offset += CHUNK) {
-      const slice  = upHex.slice(offset, offset + CHUNK);
-      const isLast = offset + CHUNK >= upHex.length ? 1 : 0;
+
+    // 2. Stream-upload in BINARY_CHUNK slices — only one chunk in memory at a time
+    const totalChunks = Math.ceil(upFile.size / BINARY_CHUNK);
+    for (let ci = 0; ci < totalChunks; ci++) {
+      const byteOff = ci * BINARY_CHUNK;
+      const buf     = await upFile.slice(byteOff, byteOff + BINARY_CHUNK).arrayBuffer();
+      const bytes   = new Uint8Array(buf);
+      const hex     = Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+      const isLast  = ci === totalChunks - 1 ? 1 : 0;
+
       const ur = await kFetch("/api/stream/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok()}` },
-        body: JSON.stringify({ name: upName, hex: slice, offset: offset / 2, last: isLast }),
+        body: JSON.stringify({ name: upName, hex, offset: byteOff, last: isLast }),
       });
-      if (ur.ok !== "true") { flash(`✖ Upload failed at offset ${offset / 2}: ${ur.error}`); setUploading(false); return; }
+      if (ur.ok !== "true") {
+        flash(`✖ Upload failed at chunk ${ci + 1}/${totalChunks}: ${ur.error}`);
+        setUploading(false); return;
+      }
+      setUpProgress(Math.round(((ci + 1) / totalChunks) * 100));
     }
-    flash(`✔ Stored '${upName}' (${upSize.toLocaleString()} bytes)`);
-    setUpHex(""); setUpSize(0); if (fileRef.current) fileRef.current.value = "";
+
+    flash(`✔ Stored '${upName}' (${fmtSize(upFile.size)})`);
+    setUpFile(null); setUpSize(0); setUpProgress(0);
+    if (fileRef.current) fileRef.current.value = "";
     load();
     setUploading(false);
   };
@@ -936,7 +945,7 @@ function StreamLibrary() {
           <FileText className="w-3.5 h-3.5" /> Upload File
         </span>
         <p className="text-[10px] text-white/40 font-mono leading-relaxed">
-          Text files, PDFs, images — any binary content up to 1 MiB. Stored as an <code>OBJ_TYPE_STREAM</code> object; journaled and indexed automatically.
+          Any file type up to 64 MiB. Streamed in 16 KiB chunks — only one chunk in memory at a time. Stored as <code>OBJ_TYPE_STREAM</code>; journaled and indexed automatically.
         </p>
         <input ref={fileRef} type="file" onChange={handleFileChange}
           className="w-full text-[11px] font-mono text-white/60 bg-[#0d1117] border border-white/10 px-3 py-2 file:mr-3 file:bg-amber-500/10 file:border file:border-amber-500/30 file:text-amber-300 file:text-[10px] file:font-mono file:uppercase file:tracking-widest file:px-3 file:py-1 file:cursor-pointer" />
@@ -944,7 +953,9 @@ function StreamLibrary() {
           <div className="text-[10px] font-mono text-white/50 space-y-1">
             <div>Name: <span className="text-white/80">{upName}</span></div>
             <div>MIME: <span className="text-white/80">{upMime}</span></div>
-            <div>Size: <span className={`${upSize > 1048576 ? "text-red-400" : "text-emerald-400"}`}>{fmtSize(upSize)}{upSize > 1048576 ? " — exceeds 1 MiB limit" : ""}</span></div>
+            <div>Size: <span className={`${upSize > MAX_FILE_SIZE ? "text-red-400" : "text-emerald-400"}`}>
+              {fmtSize(upSize)}{upSize > MAX_FILE_SIZE ? " — exceeds 64 MiB limit" : ""}
+            </span></div>
           </div>
         )}
         <div className="flex gap-3">
@@ -953,14 +964,25 @@ function StreamLibrary() {
           <input value={upMime} onChange={e => setUpMime(e.target.value)} placeholder="mime type"
             className="flex-1 bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
         </div>
-        <button onClick={handleUpload} disabled={!upHex || uploading || upSize > 1048576}
+        {uploading && (
+          <div className="space-y-1">
+            <div className="flex justify-between text-[10px] font-mono text-white/40">
+              <span>UPLOADING…</span><span>{upProgress}%</span>
+            </div>
+            <div className="w-full bg-white/5 h-1">
+              <div className="bg-amber-400 h-1 transition-all" style={{ width: `${upProgress}%` }} />
+            </div>
+          </div>
+        )}
+        <button onClick={handleUpload} disabled={!upFile || uploading || upSize > MAX_FILE_SIZE}
           className="w-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-mono tracking-widest uppercase py-2 hover:bg-amber-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-          {uploading ? "UPLOADING…" : "STORE STREAM"}
+          {uploading ? `UPLOADING ${upProgress}%` : "STORE STREAM"}
         </button>
       </div>
     </div>
   );
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN CONTAINER
