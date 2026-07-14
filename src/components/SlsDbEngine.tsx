@@ -768,7 +768,7 @@ function ProgramManager() {
           <span className="font-mono text-[10px] tracking-widest text-cyan-400 uppercase font-semibold flex items-center gap-2">
             <Upload className="w-3.5 h-3.5" /> Upload Binary
           </span>
-          <p className="text-[10px] text-white/40 font-mono leading-relaxed">Hex-encoded flat binary or ELF64. Auto-chunked. Fires DB1–DB7 hooks on completion.</p>
+          <p className="text-[10px] text-white/40 font-mono leading-relaxed">Hex-encoded flat binary or ELF64. Auto-chunked. Fires engine hooks on completion.</p>
           <input value={upName} onChange={e => setUpName(e.target.value)} placeholder="program name"
             className="w-full bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
           <textarea value={upHex} onChange={e => setUpHex(e.target.value)} placeholder="hex bytes (e.g. 4889c748c7c0...)"
@@ -816,7 +816,7 @@ export default function SlsDbEngine({ objects, activeUser }: SlsDbEngineProps) {
           Database Control Centre
         </h2>
         <p className="text-[11px] font-mono text-white/40 mt-3 leading-relaxed">
-          Inspect schemas, browse before/after-image journals, monitor materialized query tables, and run analytics queries — all powered by the live AeroSLS DB engine (DB1–DB7).
+          Inspect schemas, browse before/after-image journals, monitor materialized query tables, and run analytics queries — all powered by the live AeroSLS DB engine.
         </p>
       </div>
 
