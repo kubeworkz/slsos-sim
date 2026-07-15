@@ -99,9 +99,48 @@ Please provide a highly detailed, architecturally accurate, and professional res
         body: JSON.stringify({ prompt: fullPrompt }),
       });
 
-      // Guard: if the response is not JSON (e.g. nginx returned HTML because
-      // the Express server isn't running), surface a clear config message.
       const contentType = response.headers.get("content-type") || "";
+
+      // ── SSE streaming (Ollama backend) ────────────────────────────────────
+      if (contentType.includes("text/event-stream")) {
+        clearInterval(interval);
+        setThinkingSteps([]);
+
+        // Seed an empty message that we'll grow token by token
+        setChatHistory(prev => [...prev, { sender: "coprocessor", text: "" }]);
+
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let accumulated = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const chunk = JSON.parse(line.slice(6));
+              if (chunk.token) {
+                accumulated += chunk.token;
+                // Update the last message in-place so the cursor feels live
+                setChatHistory(prev => {
+                  const next = [...prev];
+                  next[next.length - 1] = { sender: "coprocessor", text: accumulated };
+                  return next;
+                });
+              }
+            } catch { /* partial */ }
+          }
+        }
+        setIsLoading(false);
+        return;
+      }
+
+      // ── Guard: not JSON and not SSE (e.g. nginx returned HTML) ───────────
       if (!contentType.includes("application/json")) {
         clearInterval(interval);
         setChatHistory(prev => [...prev, {
@@ -113,6 +152,7 @@ Please provide a highly detailed, architecturally accurate, and professional res
         return;
       }
 
+      // ── Non-streaming JSON (Claude / OpenAI backends) ─────────────────────
       const data = await response.json();
       clearInterval(interval);
 

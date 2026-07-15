@@ -1053,7 +1053,7 @@ export default function SlsUserPortal({
                   <span className="font-mono text-[9px] text-emerald-400 uppercase tracking-wider font-semibold">Active & Live</span>
                 </div>
               </div>
-              <h3 className="text-lg font-serif italic text-white mt-1">Sovereign OS REST Developer API</h3>
+              <h3 className="text-lg font-serif italic text-white mt-1">AeroSLS OS REST Developer API</h3>
               <p className="text-white/50 text-xs font-light mt-1">
                 Expose your Single Level Storage flat virtual memory space to external scripts and tools. Command allocations, trigger writes, and query page states remotely in real-time.
               </p>
@@ -1069,7 +1069,7 @@ export default function SlsUserPortal({
                       <span className="font-mono text-[9px] text-cyan-400 uppercase tracking-widest font-bold block mb-1">// key allocation unit</span>
                       <h4 className="text-xs font-mono font-bold text-white uppercase">Generate API Access Token</h4>
                       <p className="text-[10px] text-white/40 leading-relaxed font-light">
-                        Create a unique secret key to authenticate your scripts and third-party tools against the Sovereign flat memory space.
+                        Create a unique secret key to authenticate your scripts and third-party tools against the AeroSLS flat memory space.
                       </p>
                     </div>
 

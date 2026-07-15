@@ -110,23 +110,61 @@ async function startServer() {
       }
 
       // ── Ollama native API (default — fully local, no data egress) ─────────
+      // Streams tokens back as SSE so the UI renders progressively.
       else {
         const baseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
         const model   = process.env.AI_MODEL        || "llama3.2";
-        const r = await fetch(`${baseUrl}/api/generate`, {
+        const userContent = system !== defaultSystem
+          ? `[Context]\n${system}\n\n[Question]\n${prompt}`
+          : prompt;
+        const r = await fetch(`${baseUrl}/api/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model, system, prompt, stream: false }),
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "user", content: userContent }],
+            stream: true,
+          }),
         });
-        const d: any = await r.json();
-        if (!r.ok) throw new Error(d.error || JSON.stringify(d));
-        text = d.response ?? "";
+        if (!r.ok) {
+          const e: any = await r.json().catch(() => ({}));
+          throw new Error(e.error || `Ollama error ${r.status}`);
+        }
+
+        // Open SSE stream to client
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.setHeader("X-Accel-Buffering", "no"); // tell nginx not to buffer
+        res.flushHeaders();
+
+        const reader = (r.body as any).getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const chunk = JSON.parse(line);
+              const token: string = chunk.message?.content ?? "";
+              if (token) res.write(`data: ${JSON.stringify({ token })}\n\n`);
+              if (chunk.done) res.write(`data: ${JSON.stringify({ done: true, backend, model })}\n\n`);
+            } catch { /* partial line — ignore */ }
+          }
+        }
+        res.end();
+        return; // skip res.json below
       }
 
       res.json({ text, backend, model: process.env.AI_MODEL || "(default)" });
     } catch (err: any) {
       console.error(`[AI/${backend}]`, err.message);
-      res.status(500).json({ error: err.message || "AI generation failed" });
+      if (!res.headersSent) res.status(500).json({ error: err.message || "AI generation failed" });
     }
   });
 
