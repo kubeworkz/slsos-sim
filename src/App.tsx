@@ -430,12 +430,13 @@ export default function App() {
 
     const poll = async () => {
       try {
-        const [healthRes, svcRes, walRes, tiersRes, objRes] = await Promise.all([
+        const [healthRes, svcRes, walRes, tiersRes, objRes, metricsRes] = await Promise.all([
           fetch("/api/health").then(r => r.json()).catch(() => null),
           fetch("/api/services").then(r => r.json()).catch(() => null),
           fetch("/api/wal").then(r => r.json()).catch(() => null),
           fetch("/api/tiers").then(r => r.json()).catch(() => null),
           fetch("/api/objects").then(r => r.json()).catch(() => null),
+          fetch("/api/metrics").then(r => r.json()).catch(() => null),
         ]);
 
         // ── Uptime from kernel tick counter (~10 ms per tick) ─────────────────
@@ -456,6 +457,23 @@ export default function App() {
             ...prev, l1CacheHits: l1, l2DramHits: l2,
             l3SsdHits: l3, l4ArchiveHits: l4, totalAllocatedPages: totalPages,
           }));
+        }
+
+        // ── Access events + tier promotions + IPC latency ─────────────────────
+        if (metricsRes) {
+          const ipcLatencyMs = metricsRes.ipc_avg_latency_ns > 0
+            ? metricsRes.ipc_avg_latency_ns / 1_000_000
+            : 0;
+          setSystemMetrics(prev => ({
+            ...prev,
+            totalAccesses:    metricsRes.total_accesses   ?? prev.totalAccesses,
+            pageFaultCount:   metricsRes.total_promotions ?? prev.pageFaultCount,
+            compressionRatio: 1.0,   // kernel has no compression tier yet
+          }));
+          // Propagate live IPC latency to all kernel services
+          if (ipcLatencyMs > 0) {
+            setServices(prev => prev.map(s => ({ ...s, latencyMs: parseFloat(ipcLatencyMs.toFixed(3)) })));
+          }
         }
 
         // ── Live microkernel services ─────────────────────────────────────────
