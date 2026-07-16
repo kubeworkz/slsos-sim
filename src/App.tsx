@@ -193,6 +193,10 @@ export default function App() {
         const autoLogs: WalLogEntry[] = [];
 
         const nextObjects = prevObjects.map(obj => {
+          // Kernel objects have their tier managed by the live kernel — skip
+          // them in the frontend simulation daemon to prevent false demotion.
+          if (obj.owner === SlsUser.SYSTEM_KERNEL) return obj;
+
           const inactiveSec = (now - new Date(obj.lastAccessTime).getTime()) / 1000;
           let targetTier = obj.tier;
 
