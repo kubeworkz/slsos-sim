@@ -36,6 +36,8 @@ import SlsAiCoprocessor from "./components/SlsAiCoprocessor";
 import SlsSystemHealth from "./components/SlsSystemHealth";
 import SlsUserPortal from "./components/SlsUserPortal";
 import SlsDbEngine from "./components/SlsDbEngine";
+import SlsAgentManager from "./components/SlsAgentManager";
+import SlsWorkflowBuilder from "./components/SlsWorkflowBuilder";
 
 import { 
   Layers, 
@@ -51,7 +53,9 @@ import {
   ExternalLink,
   Plus,
   User,
-  LogOut
+  LogOut,
+  Bot,
+  GitBranch
 } from "lucide-react";
 
 const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
@@ -138,8 +142,11 @@ const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
 };
 
 export default function App() {
-  // Navigation tabs
-  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "coprocessor" | "dbengine" | "portal">("portal");
+  // Navigation tabs — start on "memory" if already logged in, else "portal"
+  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "coprocessor" | "dbengine" | "portal" | "agents" | "workflows">(() => {
+    const saved = localStorage.getItem("sls_current_portal_user");
+    return saved ? "memory" : "portal";
+  });
 
   // Portal User Subscription State
   const [currentPortalUser, setCurrentPortalUser] = useState<PortalUser | null>(() => {
@@ -342,7 +349,67 @@ export default function App() {
     loadUserData(currentPortalUser);
   }, [currentPortalUser]);
 
-  // Save changes to localStorage on modifications
+  // Sync live kernel objects into the address space map.
+  // Fetches GET /api/objects (proxied to kernel port 3001) and merges any
+  // objects not already tracked by the frontend into the objects state so
+  // they appear correctly on the address space map.
+  useEffect(() => {
+    const tierMap: Record<string, StorageTier> = {
+      L1_CACHE:  StorageTier.L1_CACHE,
+      L2_DRAM:   StorageTier.L2_DRAM,
+      L3_SSD:    StorageTier.L3_SSD,
+      L4_ARCHIVE: StorageTier.L4_ARCHIVE,
+    };
+    const typeMap: Record<string, SlsObjectType> = {
+      DB_TABLE:        SlsObjectType.DB_TABLE,
+      PROGRAM:         SlsObjectType.PROGRAM,
+      SYSTEM_METADATA: SlsObjectType.SYSTEM_METADATA,
+      STREAM:          SlsObjectType.RAW_SEGMENT,
+      SERVICE_PROCESS: SlsObjectType.PROGRAM,
+      HEAP_BLOB:       SlsObjectType.RAW_SEGMENT,
+    };
+    const DEFAULT_ACL = {
+      SYSTEM_KERNEL: { read: true,  write: true,  execute: true  },
+      DB_ADMIN:      { read: true,  write: true,  execute: false },
+      APP_USER:      { read: true,  write: false, execute: false },
+      GUEST:         { read: false, write: false, execute: false },
+    };
+    const formatAddr = (raw: string): string => {
+      const clean = raw.replace(/[_\s]/g, "").replace(/^0x/i, "");
+      const hex   = clean.padStart(16, "0").toUpperCase();
+      return `0x${hex.slice(0,4)}_${hex.slice(4,8)}_${hex.slice(8,12)}_${hex.slice(12,16)}`;
+    };
+
+    fetch("/api/objects")
+      .then(r => r.json())
+      .then((resp: any) => {
+        const kernelObjs: any[] = resp?.objects ?? [];
+        if (!kernelObjs.length) return;
+        setObjects(prev => {
+          const existingNames = new Set(prev.map((o: SlsObject) => o.name));
+          const newObjs: SlsObject[] = kernelObjs
+            .filter((k: any) => !existingNames.has(k.name))
+            .map((k: any): SlsObject => ({
+              id:            k.name,
+              name:          k.name,
+              type:          typeMap[k.type] ?? SlsObjectType.SYSTEM_METADATA,
+              startAddress:  formatAddr(k.vaddr ?? "0x1000000000000"),
+              sizePages:     k.pages ?? 1,
+              data:          {},
+              acl:           DEFAULT_ACL as any,
+              owner:         SlsUser.SYSTEM_KERNEL,
+              tier:          tierMap[k.tier] ?? StorageTier.L3_SSD,
+              lastAccessTime: new Date().toISOString(),
+              isCompressed:  k.tier === "L4_ARCHIVE",
+            }));
+          if (!newObjs.length) return prev;
+          const merged = [...prev, ...newObjs];
+          setMemoryPages(buildMemoryPages(merged));
+          return merged;
+        });
+      })
+      .catch(() => { /* kernel offline — silent */ });
+  }, []);  // run once on mount
   const saveStateToStorage = (
     currentObjects: SlsObject[],
     currentServices: MicrokernelService[],
@@ -1137,6 +1204,8 @@ export default function App() {
             { key: "transactions", label: "Transactional Log",  icon: <Database    className="w-3.5 h-3.5" /> },
             { key: "microkernel",  label: "Microkernel Bus",    icon: <Cpu         className="w-3.5 h-3.5" /> },
             { key: "coprocessor",  label: "AI Assistant",       icon: <Sparkles    className="w-3.5 h-3.5" /> },
+            { key: "agents",       label: "AI Agents",          icon: <Bot         className="w-3.5 h-3.5" /> },
+            { key: "workflows",    label: "Workflows",           icon: <GitBranch   className="w-3.5 h-3.5" /> },
             { key: "dbengine",     label: "DB Engine",          icon: <Database    className="w-3.5 h-3.5" /> },
             { key: "portal",       label: "User Portal",        icon: <User        className="w-3.5 h-3.5" /> },
           ].map((tab) => (
@@ -1244,6 +1313,14 @@ export default function App() {
                 objects={objects}
                 activeUser={activeUser}
               />
+            )}
+
+            {activeTab === "agents" && (
+              <SlsAgentManager />
+            )}
+
+            {activeTab === "workflows" && (
+              <SlsWorkflowBuilder />
             )}
 
           </>

@@ -80,6 +80,16 @@ export const INITIAL_SERVICES: MicrokernelService[] = [
     memoryAddress: "0x0000_0000_1000_5000",
     restarts: 0,
     description: "Appends WAL logs, verifies checksum integrity, and orchestrates crash recovery."
+  },
+  {
+    id: "agent_mgr",
+    name: "AgentRuntimeMgr",
+    pid: 106,
+    state: "ONLINE",
+    latencyMs: 0.0,
+    memoryAddress: "0x0000_0000_1000_6000",
+    restarts: 0,
+    description: "Manages AI agent lifecycle (create/run/kill/schedule), routes IPC messages to the ReAct inference engine."
   }
 ];
 
@@ -233,27 +243,49 @@ export const INITIAL_METRICS: SlsSystemMetrics = {
 };
 
 // Seed 64 visual pages (8x8) representing a slice of the SLS flat workspace
-export function buildMemoryPages(objects: SlsObject[]): MemoryPage[] {
-  const pages: MemoryPage[] = [];
-  // Build 64 segments
-  for (let i = 0; i < 64; i++) {
-    const addressNum = 0x1000 + i * 4;
-    const address = `0x0000_1000_${addressNum.toString(16).toUpperCase().padStart(4, "0")}_0000`;
-    
-    // Distribute objects across memory space to make the visual interesting
-    let mappedObject: SlsObject | null = null;
-    if (i >= 2 && i < 6) mappedObject = objects.find(o => o.id === "sys_catalog") || null;
-    else if (i >= 12 && i < 20) mappedObject = objects.find(o => o.id === "db_cust") || null;
-    else if (i >= 24 && i < 30) mappedObject = objects.find(o => o.id === "db_prod") || null;
-    else if (i >= 32 && i < 34) mappedObject = objects.find(o => o.id === "user_sec") || null;
-    else if (i >= 44 && i < 60) mappedObject = objects.find(o => o.id === "archive_tx_history") || null;
+// Parse a kernel address string ("0x1000000000000" or "0x0001_0000_0000_0000") to a number.
+// Returns null if unparseable. Safe for addresses up to 2^53 (well within JS Number precision).
+function parseKernelAddr(s: string): number | null {
+  if (!s) return null;
+  const clean = s.replace(/[_\s]/g, "").replace(/^0x/i, "");
+  const n = parseInt(clean, 16);
+  return isNaN(n) ? null : n;
+}
 
+// Format a numeric address as "0xHHHH_HHHH_HHHH_HHHH"
+function formatKernelAddr(addr: number): string {
+  const hex = addr.toString(16).toUpperCase().padStart(16, "0");
+  return `0x${hex.slice(0,4)}_${hex.slice(4,8)}_${hex.slice(8,12)}_${hex.slice(12,16)}`;
+}
+
+export function buildMemoryPages(objects: SlsObject[]): MemoryPage[] {
+  const GRID_SIZE = 64;
+  const PAGE_STEP = 0x1000; // 4 KiB per cell
+
+  // Build address → object lookup covering every page an object occupies
+  const addrToObj = new Map<number, SlsObject>();
+  for (const obj of objects) {
+    const base = parseKernelAddr(obj.startAddress);
+    if (base === null) continue;
+    for (let p = 0; p < Math.max(1, obj.sizePages); p++) {
+      addrToObj.set(base + p * PAGE_STEP, obj);
+    }
+  }
+
+  // Find base address: lowest allocated address, or a default if nothing allocated
+  const allAddrs = [...addrToObj.keys()].sort((a, b) => a - b);
+  const baseAddr = allAddrs.length > 0 ? allAddrs[0] : 0x1000000000000;
+
+  const pages: MemoryPage[] = [];
+  for (let i = 0; i < GRID_SIZE; i++) {
+    const addr = baseAddr + i * PAGE_STEP;
+    const obj  = addrToObj.get(addr) ?? null;
     pages.push({
-      address,
-      objectId: mappedObject ? mappedObject.id : null,
-      objectName: mappedObject ? mappedObject.name : null,
-      tier: mappedObject ? mappedObject.tier : StorageTier.L2_DRAM,
-      isDirty: false
+      address:    formatKernelAddr(addr),
+      objectId:   obj ? obj.id   : null,
+      objectName: obj ? obj.name : null,
+      tier:       obj ? obj.tier : StorageTier.L2_DRAM,
+      isDirty:    false,
     });
   }
   return pages;
