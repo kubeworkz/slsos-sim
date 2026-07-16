@@ -264,7 +264,8 @@ export function buildMemoryPages(objects: SlsObject[]): MemoryPage[] {
   // Kernel virtual address base — objects allocated by the real kernel live at
   // or above this address.  Demo/simulated objects use much lower synthetic
   // addresses and should not anchor the grid when real kernel objects exist.
-  const KERNEL_VADDR_BASE = 0x100000000000; // 2^44  (~17.6 TB)
+  // Matches OBJ_VADDR_BASE = 0x0001000000000000 in kernel/object_catalog.c
+  const KERNEL_VADDR_BASE = 0x1000000000000; // 2^48  (~281 TB)
 
   // Prefer kernel-space objects for grid positioning; fall back to all objects.
   const kernelObjs = objects.filter(o => {
