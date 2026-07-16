@@ -413,6 +413,101 @@ export default function App() {
       })
       .catch(() => { /* kernel offline — silent */ });
   }, []);  // run once on mount
+
+  // ── Live kernel polling (every 5 s) ────────────────────────────────────────
+  // Syncs health/uptime, microkernel services, WAL log, and tier statistics
+  // directly from the running AeroSLS kernel so the simulation stays accurate.
+  useEffect(() => {
+    // Static service metadata the kernel doesn't expose (descriptions, latency)
+    const SERVICE_META: Record<string, { id: string; latencyMs: number; description: string; memoryAddress: string }> = {
+      VirtualMemoryMgr:   { id: "mem_mgr",   latencyMs: 1.2, memoryAddress: "0x0000_0000_1000_1000", description: "Manages SLS address translation, page faults, and persistent heap page allocation." },
+      ObjectSecurityMgr:  { id: "sec_mgr",   latencyMs: 1.8, memoryAddress: "0x0000_0000_1000_2000", description: "Enforces ACL validation per object pointer access at hardware/kernel boundary." },
+      NativeDbStoreMgr:   { id: "db_mgr",    latencyMs: 2.5, memoryAddress: "0x0000_0000_1000_3000", description: "Coordinates pointer-based transactional memory commits and ACID updates." },
+      StorageTierMgr:     { id: "tier_mgr",  latencyMs: 0.9, memoryAddress: "0x0000_0000_1000_4000", description: "Automates background compression, page-tier demotion, and fast swaps." },
+      RecoveryLogVerifier:{ id: "log_mgr",   latencyMs: 1.4, memoryAddress: "0x0000_0000_1000_5000", description: "Appends WAL logs, verifies checksum integrity, and orchestrates crash recovery." },
+      AgentRuntimeMgr:    { id: "agent_mgr", latencyMs: 0.0, memoryAddress: "0x0000_0000_1000_6000", description: "Manages AI agent lifecycle (create/run/kill/schedule), routes IPC messages to the ReAct inference engine." },
+    };
+
+    const poll = async () => {
+      try {
+        const [healthRes, svcRes, walRes, tiersRes, objRes] = await Promise.all([
+          fetch("/api/health").then(r => r.json()).catch(() => null),
+          fetch("/api/services").then(r => r.json()).catch(() => null),
+          fetch("/api/wal").then(r => r.json()).catch(() => null),
+          fetch("/api/tiers").then(r => r.json()).catch(() => null),
+          fetch("/api/objects").then(r => r.json()).catch(() => null),
+        ]);
+
+        // ── Uptime from kernel tick counter (~10 ms per tick) ─────────────────
+        if (healthRes?.uptime_ticks != null) {
+          const uptimeSec = Math.floor(healthRes.uptime_ticks / 100);
+          setSystemMetrics(prev => ({ ...prev, uptimeSeconds: uptimeSec }));
+        }
+
+        // ── Tier distribution → system metrics ───────────────────────────────
+        if (tiersRes) {
+          const l1 = (tiersRes.l1_cache   ?? []).length;
+          const l2 = (tiersRes.l2_dram    ?? []).length;
+          const l3 = (tiersRes.l3_ssd     ?? []).length;
+          const l4 = (tiersRes.l4_archive ?? []).length;
+          const totalPages = (objRes?.objects ?? [])
+            .reduce((s: number, o: any) => s + (o.pages ?? 1), 0);
+          setSystemMetrics(prev => ({
+            ...prev, l1CacheHits: l1, l2DramHits: l2,
+            l3SsdHits: l3, l4ArchiveHits: l4, totalAllocatedPages: totalPages,
+          }));
+        }
+
+        // ── Live microkernel services ─────────────────────────────────────────
+        if (svcRes?.services?.length) {
+          setServices(svcRes.services.map((s: any): MicrokernelService => {
+            const meta = SERVICE_META[s.name] ?? {
+              id: s.name.toLowerCase().replace(/\s+/g, "_"),
+              latencyMs: 1.0,
+              memoryAddress: `0x0000_0000_1000_${s.pid.toString(16).toUpperCase().padStart(4, "0")}`,
+              description: `Kernel microservice PID ${s.pid}, port ${s.port}.`,
+            };
+            return {
+              id:            meta.id,
+              name:          s.name,
+              pid:           s.pid,
+              state:         s.state === "ONLINE" ? "ONLINE" as const
+                           : s.state === "FAULT"  ? "FAILED" as const
+                           :                        "REBOOTING" as const,
+              latencyMs:     meta.latencyMs,
+              memoryAddress: meta.memoryAddress,
+              restarts:      s.reboots ?? 0,
+              description:   meta.description,
+            };
+          }));
+        }
+
+        // ── Kernel WAL entries (append new ones only) ─────────────────────────
+        if (walRes?.entries?.length) {
+          setWalLogs(prev => {
+            const seen = new Set(prev.map(w => w.index));
+            const fresh: WalLogEntry[] = walRes.entries
+              .filter((e: any) => !seen.has(e.id))
+              .map((e: any): WalLogEntry => ({
+                index:     e.id,
+                txId:      e.tx ? `TX-${e.tx}` : null,
+                timestamp: new Date().toISOString(),
+                action:    e.state === "COMMITTED" ? "TX_COMMIT"
+                         : e.state === "PENDING"   ? "TX_WRITE" : "TX_ABORT",
+                details:   `[${e.state}] key=${e.key}`,
+                checksum:  generateChecksum(`WAL_${e.id}_${e.key}`),
+                verified:  e.state === "COMMITTED",
+              }));
+            return fresh.length ? [...prev, ...fresh] : prev;
+          });
+        }
+      } catch { /* kernel offline — silent */ }
+    };
+
+    poll();                                // immediate first run
+    const id = setInterval(poll, 5000);   // then every 5 s
+    return () => clearInterval(id);
+  }, []);  // stable — no deps needed, poll closure captures setters
   const saveStateToStorage = (
     currentObjects: SlsObject[],
     currentServices: MicrokernelService[],
