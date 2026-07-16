@@ -385,25 +385,24 @@ export default function App() {
       .then((resp: any) => {
         const kernelObjs: any[] = resp?.objects ?? [];
         if (!kernelObjs.length) return;
+        const kernelNames = new Set(kernelObjs.map((k: any) => k.name));
+        const freshKernel: SlsObject[] = kernelObjs.map((k: any): SlsObject => ({
+          id:            k.name,
+          name:          k.name,
+          type:          typeMap[k.type] ?? SlsObjectType.SYSTEM_METADATA,
+          startAddress:  formatAddr(k.vaddr ?? "0x1000000000000"),
+          sizePages:     k.pages ?? 1,
+          data:          {},
+          acl:           DEFAULT_ACL as any,
+          owner:         SlsUser.SYSTEM_KERNEL,
+          tier:          tierMap[k.tier] ?? StorageTier.L3_SSD,
+          lastAccessTime: new Date().toISOString(),
+          isCompressed:  k.tier === "L4_ARCHIVE",
+        }));
         setObjects(prev => {
-          const existingNames = new Set(prev.map((o: SlsObject) => o.name));
-          const newObjs: SlsObject[] = kernelObjs
-            .filter((k: any) => !existingNames.has(k.name))
-            .map((k: any): SlsObject => ({
-              id:            k.name,
-              name:          k.name,
-              type:          typeMap[k.type] ?? SlsObjectType.SYSTEM_METADATA,
-              startAddress:  formatAddr(k.vaddr ?? "0x1000000000000"),
-              sizePages:     k.pages ?? 1,
-              data:          {},
-              acl:           DEFAULT_ACL as any,
-              owner:         SlsUser.SYSTEM_KERNEL,
-              tier:          tierMap[k.tier] ?? StorageTier.L3_SSD,
-              lastAccessTime: new Date().toISOString(),
-              isCompressed:  k.tier === "L4_ARCHIVE",
-            }));
-          if (!newObjs.length) return prev;
-          const merged = [...prev, ...newObjs];
+          // Always replace stale cached kernel objects with live API data
+          const nonKernel = prev.filter((o: SlsObject) => !kernelNames.has(o.name));
+          const merged = [...nonKernel, ...freshKernel];
           setMemoryPages(buildMemoryPages(merged));
           return merged;
         });
