@@ -259,12 +259,23 @@ function formatKernelAddr(addr: number): string {
 }
 
 export function buildMemoryPages(objects: SlsObject[]): MemoryPage[] {
-  const GRID_SIZE = 64;
-  const PAGE_STEP = 0x1000; // 4 KiB per cell
+  const GRID_SIZE   = 64;
+  const PAGE_STEP   = 0x1000;          // 4 KiB per cell
+  // Kernel virtual address base — objects allocated by the real kernel live at
+  // or above this address.  Demo/simulated objects use much lower synthetic
+  // addresses and should not anchor the grid when real kernel objects exist.
+  const KERNEL_VADDR_BASE = 0x100000000000; // 2^44  (~17.6 TB)
 
-  // Build address → object lookup covering every page an object occupies
+  // Prefer kernel-space objects for grid positioning; fall back to all objects.
+  const kernelObjs = objects.filter(o => {
+    const a = parseKernelAddr(o.startAddress);
+    return a !== null && a >= KERNEL_VADDR_BASE;
+  });
+  const gridObjs = kernelObjs.length > 0 ? kernelObjs : objects;
+
+  // Build address → object lookup covering every page each object occupies
   const addrToObj = new Map<number, SlsObject>();
-  for (const obj of objects) {
+  for (const obj of gridObjs) {
     const base = parseKernelAddr(obj.startAddress);
     if (base === null) continue;
     for (let p = 0; p < Math.max(1, obj.sizePages); p++) {
