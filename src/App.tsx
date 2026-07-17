@@ -1248,7 +1248,7 @@ export default function App() {
             <div className="flex items-center gap-3">
               <span className="font-mono text-xs tracking-widest text-cyan-400 uppercase">System Kernel 4.0 // AeroSLS</span>
               <span className="text-[9px] font-mono border border-cyan-400/25 text-cyan-400 px-1.5 py-0.5 rounded uppercase tracking-wider">
-                Active Simulator
+                Active Kernel
               </span>
             </div>
             <h1 className="text-3xl font-serif italic text-white tracking-tight leading-tight mt-1 flex items-center gap-2">
