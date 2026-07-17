@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Sparkles, Send, BrainCircuit, RefreshCw, MessageSquare, ArrowRight, HelpCircle } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Sparkles, Send, BrainCircuit, RefreshCw, MessageSquare, ArrowRight, HelpCircle, Bot } from "lucide-react";
 import { SlsObject, SlsSystemMetrics, MicrokernelService } from "../types/sls";
 
 interface SlsAiCoprocessorProps {
@@ -24,6 +24,54 @@ export default function SlsAiCoprocessor({
   ]);
   const [isLoading, setIsLoading] = useState(false);
   const [thinkingSteps, setThinkingSteps] = useState<string[]>([]);
+
+  // ── Kernel Agent mode ──────────────────────────────────────────────────────
+  // When enabled, prompts are routed to POST /api/agent/run instead of the
+  // sim's /api/ai/generate proxy.  The kernel orchestrates the ReAct loop.
+  const [kernelMode,          setKernelMode]          = useState(false);
+  const [kernelAgents,        setKernelAgents]        = useState<{name:string;model:string;state:string}[]>([]);
+  const [selectedKernelAgent, setSelectedKernelAgent] = useState("");
+  const [kernelRunStatus,     setKernelRunStatus]     = useState<string | null>(null);
+  const AUTH_TOKEN = "deadbeef01234567cafebabe76543210";
+
+  useEffect(() => {
+    if (!kernelMode) return;
+    fetch("/api/agents")
+      .then(r => r.json())
+      .then(d => {
+        const list = d.agents || [];
+        setKernelAgents(list);
+        if (list.length > 0) setSelectedKernelAgent(list[0].name);
+      })
+      .catch(() => setKernelAgents([]));
+  }, [kernelMode]);
+
+  const handleKernelSend = async (message: string) => {
+    if (!message.trim() || !selectedKernelAgent || isLoading) return;
+    setChatHistory(prev => [...prev, { sender: "user", text: message }]);
+    setInputPrompt("");
+    setIsLoading(true);
+    setKernelRunStatus(null);
+    try {
+      const res = await fetch("/api/agent/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${AUTH_TOKEN}` },
+        body: JSON.stringify({ name: selectedKernelAgent, message }),
+      });
+      const data = await res.json();
+      if (data.ok === "true") {
+        const status = `✅ Agent **${selectedKernelAgent}** completed ${data.steps} step(s). Full answer is on the kernel serial log. Use \`agent status ${selectedKernelAgent}\` in the shell to see the last answer.`;
+        setChatHistory(prev => [...prev, { sender: "coprocessor", text: status }]);
+        setKernelRunStatus(`✓ ${data.steps} step(s)`);
+      } else {
+        setChatHistory(prev => [...prev, { sender: "coprocessor", text: `⚠️ Kernel agent error: ${data.error ?? "unknown"}` }]);
+      }
+    } catch (e: any) {
+      setChatHistory(prev => [...prev, { sender: "coprocessor", text: `⚠️ Connection error: ${e.message}` }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const promptTemplates = [
     {
@@ -252,15 +300,53 @@ Please provide a highly detailed, architecturally accurate, and professional res
                 </h3>
               </div>
             </div>
-            <button
-              onClick={() => setChatHistory([
-                { sender: "coprocessor", text: "Chat history cleared. How can I assist you with AeroSLS architecture analysis?" }
-              ])}
-              className="font-mono text-[9px] tracking-widest uppercase text-white/40 hover:text-white border border-white/10 hover:border-white/25 px-2.5 py-1.5 cursor-pointer transition-colors"
-            >
-              Clear Pipeline
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Kernel Agent mode toggle */}
+              <button
+                onClick={() => setKernelMode(prev => !prev)}
+                title="Route prompts to a kernel-resident AI agent"
+                className={`flex items-center gap-1.5 font-mono text-[9px] tracking-widest uppercase px-2.5 py-1.5 cursor-pointer transition-colors border ${
+                  kernelMode
+                    ? "bg-cyan-400/10 border-cyan-400/40 text-cyan-400 hover:bg-cyan-400/20"
+                    : "border-white/10 text-white/30 hover:text-white hover:border-white/25"
+                }`}
+              >
+                <Bot className="w-3 h-3" />
+                {kernelMode ? "Kernel Agent" : "Sim AI"}
+              </button>
+              <button
+                onClick={() => setChatHistory([
+                  { sender: "coprocessor", text: "Chat history cleared. How can I assist you with AeroSLS architecture analysis?" }
+                ])}
+                className="font-mono text-[9px] tracking-widest uppercase text-white/40 hover:text-white border border-white/10 hover:border-white/25 px-2.5 py-1.5 cursor-pointer transition-colors"
+              >
+                Clear
+              </button>
+            </div>
           </div>
+
+          {/* Kernel Agent selector — shown when kernel mode is active */}
+          {kernelMode && (
+            <div className="flex items-center gap-2 mb-3 p-2 bg-cyan-400/5 border border-cyan-400/20">
+              <Bot className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+              <span className="text-[10px] text-cyan-400 font-mono uppercase tracking-wider shrink-0">Agent:</span>
+              {kernelAgents.length === 0 ? (
+                <span className="text-[10px] text-white/30 font-mono">No kernel agents found — create one in the AI Agents tab.</span>
+              ) : (
+                <select value={selectedKernelAgent} onChange={e => setSelectedKernelAgent(e.target.value)}
+                  className="flex-1 bg-transparent border border-cyan-400/30 text-cyan-400 text-[10px] px-2 py-1 outline-none font-mono">
+                  {kernelAgents.map(ag => (
+                    <option key={ag.name} value={ag.name} className="bg-[#0B0E14]">
+                      {ag.name} ({ag.model}) — {ag.state}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {kernelRunStatus && (
+                <span className="text-[10px] text-emerald-400 font-mono shrink-0">{kernelRunStatus}</span>
+              )}
+            </div>
+          )}
 
           {/* Chat Message Thread */}
           <div className="overflow-y-auto h-[320px] mb-4 space-y-4 pr-2 scrollbar-thin">
@@ -319,24 +405,31 @@ Please provide a highly detailed, architecturally accurate, and professional res
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            handleSendPrompt(inputPrompt);
+            if (kernelMode) handleKernelSend(inputPrompt);
+            else            handleSendPrompt(inputPrompt);
           }}
           className="flex gap-2 border-t border-white/10 pt-4"
         >
           <input
             type="text"
-            disabled={isLoading}
+            disabled={isLoading || (kernelMode && kernelAgents.length === 0)}
             value={inputPrompt}
             onChange={(e) => setInputPrompt(e.target.value)}
-            placeholder="Query virtual space, ask about pointer-based paging, or design security traps..."
-            className="flex-1 bg-[#0F1219] border border-white/10 px-4 py-3 text-xs text-white placeholder-white/30 focus:outline-none focus:border-amber-400 disabled:opacity-50"
+            placeholder={kernelMode
+              ? `Send to kernel agent '${selectedKernelAgent}'…`
+              : "Query virtual space, ask about pointer-based paging, or design security traps..."}
+            className={`flex-1 bg-[#0F1219] border px-4 py-3 text-xs text-white placeholder-white/30 focus:outline-none disabled:opacity-50 ${
+              kernelMode ? "border-cyan-400/30 focus:border-cyan-400" : "border-white/10 focus:border-amber-400"
+            }`}
           />
           <button
             type="submit"
-            disabled={isLoading || !inputPrompt.trim()}
-            className="bg-amber-400 hover:bg-amber-300 disabled:bg-white/5 disabled:text-white/20 text-[#0B0E14] p-3 flex items-center justify-center cursor-pointer transition-all active:scale-[0.98]"
+            disabled={isLoading || !inputPrompt.trim() || (kernelMode && kernelAgents.length === 0)}
+            className={`disabled:bg-white/5 disabled:text-white/20 text-[#0B0E14] p-3 flex items-center justify-center cursor-pointer transition-all active:scale-[0.98] ${
+              kernelMode ? "bg-cyan-400 hover:bg-cyan-300" : "bg-amber-400 hover:bg-amber-300"
+            }`}
           >
-            <Send className="w-4.5 h-4.5" />
+            {kernelMode ? <Bot className="w-4 h-4" /> : <Send className="w-4.5 h-4.5" />}
           </button>
         </form>
       </div>

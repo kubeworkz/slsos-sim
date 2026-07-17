@@ -16,10 +16,18 @@ const kernelProxy = createProxyMiddleware({
     "/api/scan", "/api/objects", "/api/services", "/api/wal",
     "/api/tiers", "/api/processes", "/api/query",
     "/api/valloc", "/api/record", "/api/tx",
+    "/api/agents", "/api/agent",
+    "/api/workflows", "/api/workflow",
+    "/api/constraints", "/api/indexes", "/api/tables",
+    "/api/aggregate", "/api/mqt", "/api/programs", "/api/streams",
     "/auth/token", "/auth/verify",
   ],
   on: {
-    error: (_err: any, _req: any, _res: any, next: any) => { if (next) next(); },
+    error: (_err: any, _req: any, res: any) => {
+      if (res && !res.headersSent) {
+        res.status(502).json({ error: "Kernel not reachable", details: "AeroSLS kernel is offline" });
+      }
+    },
     proxyReq: fixRequestBody,  // re-attach parsed body for POST/PUT requests
   },
 });
