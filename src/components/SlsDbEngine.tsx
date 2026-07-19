@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Database, BookOpen, BarChart3, Table2, RefreshCw, Play, Plus, Trash2, ChevronDown, ChevronRight, Upload, Terminal, FileText, Download } from "lucide-react";
+import { Database, BookOpen, BarChart3, Table2, RefreshCw, Play, Plus, Trash2, ChevronDown, ChevronRight, Upload, Terminal, FileText, Download, TerminalSquare, Rows3 } from "lucide-react";
 import { SlsObject, SlsUser } from "../types/sls";
 
 interface SlsDbEngineProps {
@@ -7,12 +7,404 @@ interface SlsDbEngineProps {
   activeUser: SlsUser | null;
 }
 
-type DbTab = "schema" | "journal" | "mqt" | "aggregate" | "programs" | "streams";
+type DbTab = "sql" | "schema" | "journal" | "mqt" | "aggregate" | "programs" | "streams";
 
 // ─── Shared fetch helper ──────────────────────────────────────────────────────
 async function kFetch(path: string, opts?: RequestInit) {
   const r = await fetch(path, opts);
   return r.json();
+}
+
+// Fixed at-boot demo admin token (dave@gridworkz.com / DB_ADMIN) — the same
+// token every other authenticated write in this file already uses (see
+// MqtDashboard/AggregateQueryBuilder below). Kept as one constant here so the
+// two new authenticated calls this tab adds (POST /api/sql, POST /api/tables)
+// don't re-hardcode the literal a third/fourth time.
+const DEMO_TOKEN = "deadbeef01234567cafebabe76543210";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 0. SQL CONSOLE / TABLES BROWSER
+//
+// The one gap none of the six panels below ever closed: this project has had
+// a real SQL engine (SYS_SLS_SQL_EXECUTE — SELECT/INSERT/UPDATE/DELETE, WHERE,
+// ORDER BY, LIMIT, two-table JOIN, MVCC-backed) reachable over HTTP since Gap
+// Remediation Phase B (POST /api/sql, GET /api/tables, GET /api/tables/<name>
+// /schema), but no panel in this file ever called any of those three routes —
+// SchemaExplorer below reads legacy /api/scan DB_TABLE objects (the pre-SQL
+// KV-record model), and Query Builder only runs canned /api/aggregate calls,
+// never arbitrary SQL. This panel is the first UI in the project to actually
+// browse real row-store tables and run free-form SQL against them.
+// ─────────────────────────────────────────────────────────────────────────────
+interface SqlTableSummary { name: string; column_count: number; row_count: number; page_count: number; }
+interface SqlColumnDef { name: string; type: string; }
+interface SqlRunResult {
+  ok: boolean;
+  error?: string;
+  error_code?: number;
+  row_count?: number;
+  truncated?: boolean;
+  columns?: string[];
+  rows?: string[][];
+  affected_rows?: number;
+}
+
+// Gap Remediation Phase H companion: the "create a real SQL table from
+// scratch" flow needs three separate authenticated calls in sequence --
+// POST /api/valloc (allocate an empty DB_TABLE object), POST /api/schema
+// (define its columns, one sys_sls_schema_set() call per column server-
+// side), POST /api/tables (promote it to a row-store table, freezing the
+// schema). None of the three routes chains the others -- each is a thin,
+// independent wrapper around one syscall, matching every other POST route
+// in this file -- so the sequencing lives here, client-side, same as any
+// other multi-step admin action a UI composes from single-purpose routes.
+type NewColumn = { name: string; type: string };
+const COLUMN_TYPES = ["STRING", "UINT64", "FLOAT", "BOOL"];
+
+function CreateTablePanel({ onCreated }: { onCreated: (name: string) => void }) {
+  const [open, setOpen]       = useState(false);
+  const [name, setName]       = useState("");
+  const [pages, setPages]     = useState("2");
+  const [columns, setColumns] = useState<NewColumn[]>([{ name: "", type: "STRING" }]);
+  const [step, setStep]       = useState("");
+  const [error, setError]     = useState("");
+  const [busy, setBusy]       = useState(false);
+
+  const authHeaders = { "Content-Type": "application/json", "Authorization": `Bearer ${DEMO_TOKEN}` };
+
+  const updateColumn = (i: number, patch: Partial<NewColumn>) =>
+    setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, ...patch } : c));
+  const addColumn    = () => setColumns(prev => [...prev, { name: "", type: "STRING" }]);
+  const removeColumn = (i: number) => setColumns(prev => prev.filter((_, ci) => ci !== i));
+
+  const reset = () => {
+    setName(""); setPages("2"); setColumns([{ name: "", type: "STRING" }]);
+    setStep(""); setError(""); setOpen(false);
+  };
+
+  const handleCreate = async () => {
+    const tname = name.trim();
+    const cols  = columns.filter(c => c.name.trim());
+    if (!tname)        { setError("Table name required."); return; }
+    if (cols.length === 0) { setError("At least one column required."); return; }
+
+    setBusy(true); setError("");
+    try {
+      setStep("Allocating object…");
+      const vr = await kFetch("/api/valloc", {
+        method: "POST", headers: authHeaders,
+        body: JSON.stringify({ name: tname, type: 1 /* DB_TABLE */, pages: parseInt(pages, 10) || 2 }),
+      });
+      if (vr?.ok !== "true") { setError(`valloc failed: ${vr?.error || "unknown error"}`); setBusy(false); return; }
+
+      setStep("Defining columns…");
+      const sr = await kFetch("/api/schema", {
+        method: "POST", headers: authHeaders,
+        body: JSON.stringify({ name: tname, columns: cols.map(c => ({ name: c.name.trim(), type: c.type })) }),
+      });
+      if (sr?.ok !== "true") { setError(`schema definition failed: ${sr?.error || "unknown error"} (${sr?.columns_set ?? 0}/${cols.length} columns applied)`); setBusy(false); return; }
+
+      setStep("Promoting to row-store…");
+      const pr = await kFetch("/api/tables", {
+        method: "POST", headers: authHeaders,
+        body: JSON.stringify({ name: tname }),
+      });
+      if (pr?.ok !== "true") { setError(`promotion to row-store failed: ${pr?.error || "unknown error"}`); setBusy(false); return; }
+
+      setBusy(false);
+      onCreated(tname);
+      reset();
+    } catch (e: any) {
+      setError(e?.message || "request failed");
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 border-t border-white/10 text-[10px] font-mono tracking-widest uppercase text-cyan-400/80 hover:text-cyan-400 hover:bg-cyan-400/5 transition-colors"
+      >
+        <Plus className="w-3 h-3" /> New Table
+      </button>
+    );
+  }
+
+  return (
+    <div className="border-t border-white/10 px-4 py-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[9px] font-mono tracking-widest uppercase text-cyan-400">Create Table</span>
+        <button onClick={reset} className="text-white/30 hover:text-white/60 text-[10px] font-mono">cancel</button>
+      </div>
+      <div className="flex gap-2">
+        <input
+          value={name} onChange={e => setName(e.target.value)} placeholder="table_name"
+          className="flex-1 min-w-0 bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-2.5 py-1.5 outline-none focus:border-cyan-400/50"
+        />
+        <input
+          value={pages} onChange={e => setPages(e.target.value)} type="number" min="1" max="64" placeholder="pages"
+          className="w-16 bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-2 py-1.5 outline-none focus:border-cyan-400/50"
+        />
+      </div>
+      <div className="space-y-1.5">
+        {columns.map((c, i) => (
+          <div key={i} className="flex gap-1.5">
+            <input
+              value={c.name} onChange={e => updateColumn(i, { name: e.target.value })} placeholder={`column ${i + 1}`}
+              className="flex-1 min-w-0 bg-[#0F1219] border border-white/10 text-white font-mono text-[11px] px-2 py-1.5 outline-none focus:border-cyan-400/50"
+            />
+            <select
+              value={c.type} onChange={e => updateColumn(i, { type: e.target.value })}
+              className="bg-[#0F1219] border border-white/10 text-white/70 font-mono text-[11px] px-1.5 py-1.5 outline-none focus:border-cyan-400/50"
+            >
+              {COLUMN_TYPES.map(t => <option key={t}>{t}</option>)}
+            </select>
+            {columns.length > 1 && (
+              <button onClick={() => removeColumn(i)} className="text-white/30 hover:text-red-400 transition-colors px-1">
+                <Trash2 className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        ))}
+        <button onClick={addColumn} className="flex items-center gap-1 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors">
+          <Plus className="w-3 h-3" /> Add column
+        </button>
+      </div>
+      {error && <p className="text-[10px] font-mono text-red-400/80 leading-relaxed">{error}</p>}
+      {busy && step && <p className="text-[10px] font-mono text-cyan-400/70">{step}</p>}
+      <button
+        onClick={handleCreate}
+        disabled={busy}
+        className="w-full bg-cyan-400 text-[#0B0E14] font-mono text-[10px] font-bold uppercase tracking-widest py-2 hover:bg-cyan-300 transition-colors disabled:opacity-40"
+      >
+        {busy ? "Creating…" : "Create Table"}
+      </button>
+    </div>
+  );
+}
+
+function SqlConsole() {
+  const [tables, setTables]           = useState<SqlTableSummary[]>([]);
+  const [tablesLoading, setTablesLoading] = useState(true);
+  const [selectedTable, setSelectedTable] = useState("");
+  const [schema, setSchema]           = useState<SqlColumnDef[] | null>(null);
+  const [schemaError, setSchemaError] = useState("");
+  const [sql, setSql]                 = useState("");
+  const [result, setResult]           = useState<SqlRunResult | null>(null);
+  const [running, setRunning]         = useState(false);
+  const [history, setHistory]         = useState<string[]>([]);
+  const textareaRef                   = useRef<HTMLTextAreaElement>(null);
+
+  const loadTables = useCallback(async () => {
+    setTablesLoading(true);
+    try {
+      const data = await kFetch("/api/tables");
+      setTables(data?.tables || []);
+    } catch (_) { setTables([]); }
+    setTablesLoading(false);
+  }, []);
+
+  useEffect(() => { loadTables(); }, [loadTables]);
+
+  const runSql = useCallback(async (text: string) => {
+    const query = text.trim();
+    if (!query) return;
+    setRunning(true);
+    try {
+      const data: SqlRunResult = await kFetch("/api/sql", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${DEMO_TOKEN}` },
+        body: JSON.stringify({ query }),
+      });
+      setResult(data);
+      setHistory(prev => [query, ...prev.filter(h => h !== query)].slice(0, 10));
+      // A successful write (INSERT/UPDATE/DELETE) or a table promotion may
+      // have changed row/page counts — refresh the sidebar counts silently.
+      if (data?.ok && data.affected_rows !== undefined) loadTables();
+    } catch (e: any) {
+      setResult({ ok: false, error: e?.message || "request failed" });
+    }
+    setRunning(false);
+  }, [loadTables]);
+
+  const selectTable = useCallback(async (name: string) => {
+    setSelectedTable(name);
+    setSchema(null);
+    setSchemaError("");
+    try {
+      const data = await kFetch(`/api/tables/${encodeURIComponent(name)}/schema`);
+      if (data?.error) setSchemaError(data.error);
+      else setSchema(data?.columns || []);
+    } catch (_) { setSchemaError("failed to load schema"); }
+    const query = `SELECT * FROM ${name} LIMIT 50`;
+    setSql(query);
+    runSql(query);
+  }, [runSql]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      runSql(sql);
+    }
+  };
+
+  const resultRows = result?.rows || [];
+  const resultCols = result?.columns || [];
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6">
+      {/* ── Tables sidebar ────────────────────────────────────────────────── */}
+      <div className="border border-white/10 bg-[#0B0E14] flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+          <span className="text-[9px] font-mono tracking-widest uppercase text-white/40 flex items-center gap-1.5">
+            <Rows3 className="w-3 h-3" /> Row-Store Tables
+          </span>
+          <button onClick={loadTables} className="text-white/40 hover:text-cyan-400 transition-colors" title="Refresh table list">
+            <RefreshCw className={`w-3 h-3 ${tablesLoading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto max-h-[480px]">
+          {tablesLoading ? (
+            <p className="text-white/30 font-mono text-[11px] px-4 py-4">Loading…</p>
+          ) : tables.length === 0 ? (
+            <p className="text-white/30 font-mono text-[11px] px-4 py-4 leading-relaxed">
+              No row-store tables yet. Promote a schema'd object with{" "}
+              <code className="text-cyan-400">POST /api/tables {"{"}"name"{"}"}</code>, or use the shell's{" "}
+              <code className="text-cyan-400">sql</code> command from a booted kernel.
+            </p>
+          ) : (
+            tables.map(t => (
+              <button
+                key={t.name}
+                onClick={() => selectTable(t.name)}
+                className={`w-full text-left px-4 py-2.5 border-b border-white/5 transition-colors ${
+                  selectedTable === t.name ? "bg-cyan-400/10 border-l-2 border-l-cyan-400" : "hover:bg-white/5 border-l-2 border-l-transparent"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Table2 className="w-3 h-3 text-cyan-400 shrink-0" />
+                  <span className="font-mono text-xs text-white font-semibold truncate">{t.name}</span>
+                </div>
+                <div className="text-[9px] font-mono text-white/30 mt-0.5 pl-5">
+                  {t.column_count} cols · {t.row_count} rows · {t.page_count}p
+                </div>
+              </button>
+            ))
+          )}
+        </div>
+
+        {selectedTable && (
+          <div className="border-t border-white/10 px-4 py-3">
+            <span className="text-[9px] font-mono tracking-widest uppercase text-white/30 block mb-2">Schema — {selectedTable}</span>
+            {schemaError ? (
+              <p className="text-[10px] font-mono text-red-400/80">{schemaError}</p>
+            ) : !schema ? (
+              <p className="text-[10px] font-mono text-white/30">Loading…</p>
+            ) : (
+              <div className="space-y-1">
+                {schema.map(c => (
+                  <div key={c.name} className="flex items-center justify-between text-[10px] font-mono">
+                    <span className="text-white/70">{c.name}</span>
+                    <span className="text-purple-400/80">{c.type}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <CreateTablePanel onCreated={selectTable} />
+      </div>
+
+      {/* ── SQL editor + results ──────────────────────────────────────────── */}
+      <div className="space-y-4">
+        <div className="border border-white/10 bg-[#0B0E14] p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] font-mono tracking-widest uppercase text-cyan-400 flex items-center gap-1.5">
+              <TerminalSquare className="w-3.5 h-3.5" /> SQL Console
+            </span>
+            <span className="text-[9px] font-mono text-white/20">⌘/Ctrl + Enter to run</span>
+          </div>
+          <textarea
+            ref={textareaRef}
+            value={sql}
+            onChange={e => setSql(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="SELECT * FROM employees WHERE dept = 'Engineering' ORDER BY score DESC LIMIT 10"
+            rows={4}
+            spellCheck={false}
+            className="w-full bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-3 py-2.5 outline-none focus:border-cyan-400/50 resize-y leading-relaxed"
+          />
+          <div className="flex items-center justify-between">
+            <button
+              onClick={() => runSql(sql)}
+              disabled={running || !sql.trim()}
+              className="flex items-center gap-2 bg-cyan-400 text-[#0B0E14] font-mono text-xs font-bold uppercase tracking-widest px-5 py-2 hover:bg-cyan-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Play className="w-3.5 h-3.5" /> {running ? "Running…" : "Run Query"}
+            </button>
+            {history.length > 0 && (
+              <select
+                onChange={e => { if (e.target.value) { setSql(e.target.value); } }}
+                value=""
+                className="bg-[#0F1219] border border-white/10 text-white/50 font-mono text-[10px] px-2 py-1.5 outline-none max-w-[240px]"
+              >
+                <option value="">History…</option>
+                {history.map((h, i) => <option key={i} value={h}>{h.length > 48 ? h.slice(0, 48) + "…" : h}</option>)}
+              </select>
+            )}
+          </div>
+        </div>
+
+        {/* Results */}
+        {result && (
+          <div className="border border-white/10 bg-[#0B0E14] p-4 space-y-3">
+            {!result.ok ? (
+              <div className="flex items-start gap-2">
+                <span className="text-[9px] font-mono tracking-widest uppercase text-red-400 shrink-0 pt-0.5">Error{result.error_code !== undefined ? ` (${result.error_code})` : ""}</span>
+                <span className="text-[11px] font-mono text-red-300/80">{result.error || "query failed"}</span>
+              </div>
+            ) : result.affected_rows !== undefined ? (
+              <div className="flex items-center gap-3">
+                <span className="text-[9px] font-mono tracking-widest uppercase text-green-400">OK</span>
+                <span className="text-[11px] font-mono text-white/60">{result.affected_rows} row{result.affected_rows === 1 ? "" : "s"} affected</span>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-3">
+                  <span className="text-[9px] font-mono tracking-widest uppercase text-green-400">Results</span>
+                  <span className="text-[10px] font-mono text-white/30">
+                    {result.row_count ?? resultRows.length} row{(result.row_count ?? resultRows.length) === 1 ? "" : "s"}
+                    {result.truncated ? " (truncated)" : ""}
+                  </span>
+                </div>
+                {resultRows.length === 0 ? (
+                  <p className="text-white/40 font-mono text-xs italic">No rows returned.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[11px] font-mono border-collapse">
+                      <thead>
+                        <tr className="border-b border-white/10 text-white/40 text-[9px] uppercase tracking-widest">
+                          {resultCols.map((c, i) => <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{c}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {resultRows.map((row, ri) => (
+                          <tr key={ri} className="border-b border-white/5 hover:bg-white/3 transition-colors">
+                            {row.map((v, ci) => <td key={ci} className="px-3 py-2 text-white/70 whitespace-nowrap">{v === "" ? "—" : v}</td>)}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -988,6 +1380,7 @@ function StreamLibrary() {
 // MAIN CONTAINER
 // ─────────────────────────────────────────────────────────────────────────────
 const DB_TABS: { key: DbTab; label: string; icon: React.ReactNode }[] = [
+  { key: "sql",       label: "SQL Console",        icon: <TerminalSquare className="w-3.5 h-3.5" /> },
   { key: "schema",    label: "Schema Explorer",    icon: <Database  className="w-3.5 h-3.5" /> },
   { key: "journal",   label: "Journal Viewer",     icon: <BookOpen  className="w-3.5 h-3.5" /> },
   { key: "mqt",       label: "MQT Dashboard",      icon: <BarChart3 className="w-3.5 h-3.5" /> },
@@ -997,7 +1390,7 @@ const DB_TABS: { key: DbTab; label: string; icon: React.ReactNode }[] = [
 ];
 
 export default function SlsDbEngine({ objects, activeUser }: SlsDbEngineProps) {
-  const [dbTab, setDbTab] = useState<DbTab>("schema");
+  const [dbTab, setDbTab] = useState<DbTab>("sql");
 
   return (
     <div className="space-y-0">
@@ -1008,7 +1401,7 @@ export default function SlsDbEngine({ objects, activeUser }: SlsDbEngineProps) {
           Database Control Centre
         </h2>
         <p className="text-[11px] font-mono text-white/40 mt-3 leading-relaxed">
-          Inspect schemas, browse before/after-image journals, monitor materialized query tables, and run analytics queries — all powered by the live AeroSLS DB engine.
+          Run free-form SQL, browse row-store tables, inspect schemas, walk before/after-image journals, monitor materialized query tables, and run analytics queries — all powered by the live AeroSLS DB engine.
         </p>
       </div>
 
@@ -1032,6 +1425,7 @@ export default function SlsDbEngine({ objects, activeUser }: SlsDbEngineProps) {
 
       {/* Content */}
       <div>
+        {dbTab === "sql"       && <SqlConsole />}
         {dbTab === "schema"    && <SchemaExplorer />}
         {dbTab === "journal"   && <JournalViewer />}
         {dbTab === "mqt"       && <MqtDashboard />}
