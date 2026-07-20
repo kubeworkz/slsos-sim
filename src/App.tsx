@@ -45,6 +45,7 @@ import SlsUserPortal from "./components/SlsUserPortal";
 import SlsDbEngine from "./components/SlsDbEngine";
 import SlsAgentManager from "./components/SlsAgentManager";
 import SlsWorkflowBuilder from "./components/SlsWorkflowBuilder";
+import SlsTerminal from "./components/SlsTerminal";
 
 import { 
   Layers, 
@@ -62,7 +63,8 @@ import {
   User,
   LogOut,
   Bot,
-  GitBranch
+  GitBranch,
+  TerminalSquare
 } from "lucide-react";
 
 const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
@@ -150,7 +152,7 @@ const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
 
 export default function App() {
   // Navigation tabs — start on "memory" if already logged in, else "portal"
-  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "coprocessor" | "dbengine" | "portal" | "agents" | "workflows">(() => {
+  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "coprocessor" | "dbengine" | "portal" | "agents" | "workflows" | "terminal">(() => {
     const saved = localStorage.getItem("sls_current_portal_user");
     return saved ? "memory" : "portal";
   });
@@ -1173,10 +1175,10 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0B0E14] text-[#E0E2E5] flex flex-col font-sans select-none">
-      
+    <div className="h-screen bg-[#0B0E14] text-[#E0E2E5] flex flex-col font-sans select-none overflow-hidden">
+
       {/* 1. TOP STATUS BAR (EDITORIAL AESTHETIC HEADER) */}
-      <header className="border-b border-white/10 bg-[#0B0E14] sticky top-0 z-40 px-8 py-5 flex flex-col md:flex-row justify-between items-center gap-4">
+      <header className="shrink-0 border-b border-white/10 bg-[#0B0E14] px-8 py-5 flex flex-col md:flex-row justify-between items-center gap-4">
         <div className="flex items-center gap-4">
           <div className="w-3 h-3 bg-cyan-400 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,211,238,0.5)]"></div>
           <div>
@@ -1230,7 +1232,7 @@ export default function App() {
       </header>
 
       {/* 2. SUB-HERO EXPLANATORY STRIP (EDITORIAL SIGNATURE PANEL) */}
-      <div className="bg-[#0F1219] border-b border-white/10 px-8 py-5 flex flex-col lg:flex-row justify-between gap-6">
+      <div className="shrink-0 bg-[#0F1219] border-b border-white/10 px-8 py-5 flex flex-col lg:flex-row justify-between gap-6">
         <p className="text-sm font-light text-white/60 leading-relaxed max-w-3xl">
           Modeled after the classic hardware pointer architecture, <span className="text-white font-medium">AeroSLS</span> eliminates the boundaries between storage files and volatile RAM. Every byte resides in a flat, globally addressable virtual memory space, protected by hardware-enforced capabilities and transaction logs.
         </p>
@@ -1246,38 +1248,66 @@ export default function App() {
         </div>
       </div>
 
-      {/* 3. TABBED VIEW NAVIGATION (Sharp Editorial Tabs) */}
-      {currentPortalUser && (
-        <nav className="bg-[#0B0E14] border-b border-white/10 px-8 flex flex-wrap gap-0">
-          {[
-            { key: "memory",       label: "Address Space Map",  icon: <Layers      className="w-3.5 h-3.5" /> },
-            { key: "security",     label: "Protection Rings",   icon: <ShieldCheck className="w-3.5 h-3.5" /> },
-            { key: "transactions", label: "Transactional Log",  icon: <Database    className="w-3.5 h-3.5" /> },
-            { key: "microkernel",  label: "Microkernel Bus",    icon: <Cpu         className="w-3.5 h-3.5" /> },
-            { key: "coprocessor",  label: "AI Assistant",       icon: <Sparkles    className="w-3.5 h-3.5" /> },
-            { key: "agents",       label: "AI Agents",          icon: <Bot         className="w-3.5 h-3.5" /> },
-            { key: "workflows",    label: "Workflows",           icon: <GitBranch   className="w-3.5 h-3.5" /> },
-            { key: "dbengine",     label: "DB Engine",          icon: <Database    className="w-3.5 h-3.5" /> },
-            { key: "portal",       label: "User Portal",        icon: <User        className="w-3.5 h-3.5" /> },
-          ].map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key as any)}
-              className={`px-5 py-4 text-xs font-mono tracking-widest uppercase flex items-center gap-2 border-r border-white/10 transition-all cursor-pointer relative ${
-                activeTab === tab.key
-                  ? "bg-[#0F1219] text-white border-t-2 border-t-cyan-400 font-semibold"
-                  : "text-white/40 hover:text-white/80 hover:bg-[#0F1219]/30"
-              }`}
-            >
-              {tab.icon}
-              {tab.label}
-            </button>
-          ))}
-        </nav>
-      )}
+      {/* 3. SIDEBAR NAV + CORE INTERACTIVE CONTAINER */}
+      <div className="flex-1 flex overflow-hidden">
+        {currentPortalUser && (
+          <aside className="w-60 shrink-0 bg-[#0B0E14] border-r border-white/10 overflow-y-auto py-4">
+            {[
+              {
+                label: "System",
+                items: [
+                  { key: "memory",       label: "Address Space Map", icon: <Layers      className="w-3.5 h-3.5" /> },
+                  { key: "security",     label: "Protection Rings",  icon: <ShieldCheck className="w-3.5 h-3.5" /> },
+                  { key: "transactions", label: "Transactional Log", icon: <Database    className="w-3.5 h-3.5" /> },
+                  { key: "microkernel",  label: "Microkernel Bus",   icon: <Cpu         className="w-3.5 h-3.5" /> },
+                ],
+              },
+              {
+                label: "Database",
+                items: [
+                  { key: "dbengine", label: "DB Engine", icon: <Database        className="w-3.5 h-3.5" /> },
+                  { key: "terminal", label: "Terminal",  icon: <TerminalSquare  className="w-3.5 h-3.5" /> },
+                ],
+              },
+              {
+                label: "Intelligence",
+                items: [
+                  { key: "coprocessor", label: "AI Assistant", icon: <Sparkles  className="w-3.5 h-3.5" /> },
+                  { key: "agents",      label: "AI Agents",    icon: <Bot       className="w-3.5 h-3.5" /> },
+                  { key: "workflows",   label: "Workflows",    icon: <GitBranch className="w-3.5 h-3.5" /> },
+                ],
+              },
+              {
+                label: "Account",
+                items: [
+                  { key: "portal", label: "User Portal", icon: <User className="w-3.5 h-3.5" /> },
+                ],
+              },
+            ].map((group) => (
+              <div key={group.label} className="mb-1">
+                <div className="px-5 pt-4 pb-2 text-[9px] font-mono tracking-widest uppercase text-white/30">
+                  {group.label}
+                </div>
+                {group.items.map((tab) => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setActiveTab(tab.key as any)}
+                    className={`w-full flex items-center gap-2.5 px-5 py-2.5 text-xs font-mono tracking-widest uppercase text-left border-l-2 transition-all cursor-pointer ${
+                      activeTab === tab.key
+                        ? "bg-[#0F1219] text-white border-l-cyan-400 font-semibold"
+                        : "border-l-transparent text-white/40 hover:text-white/80 hover:bg-[#0F1219]/30"
+                    }`}
+                  >
+                    {tab.icon}
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </aside>
+        )}
 
-      {/* 4. CORE INTERACTIVE CONTAINER */}
-      <main className="flex-1 p-8 overflow-y-auto bg-[#0F1219]">
+        <main className="flex-1 p-8 overflow-y-auto bg-[#0F1219]">
         {!currentPortalUser ? (
           <SlsUserPortal
             currentUser={currentPortalUser}
@@ -1366,6 +1396,10 @@ export default function App() {
               />
             )}
 
+            {activeTab === "terminal" && (
+              <SlsTerminal />
+            )}
+
             {activeTab === "agents" && (
               <SlsAgentManager />
             )}
@@ -1376,10 +1410,11 @@ export default function App() {
 
           </>
         )}
-      </main>
+        </main>
+      </div>
 
       {/* FOOTER */}
-      <footer className="h-12 bg-[#0B0E14] border-t border-white/10 flex items-center justify-between px-8 text-[10px] font-mono text-white/30 tracking-widest uppercase">
+      <footer className="shrink-0 h-12 bg-[#0B0E14] border-t border-white/10 flex items-center justify-between px-8 text-[10px] font-mono text-white/30 tracking-widest uppercase">
         <div>AeroSLS ARCHITECT // HARDWARE PERSISTENT SIMULATION</div>
         <div className="flex gap-6">
           <span>Build: 4.1.0-EDITORIAL</span>
