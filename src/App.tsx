@@ -28,14 +28,12 @@ import {
   DEFAULT_ACL
 } from "./lib/slsEngine";
 
-// Fixed at-boot demo admin token (dave@gridworkz.com / DB_ADMIN) -- Gap
-// Remediation Phase E gated every GET /api/* route behind a bearer token
-// (net/http.c), and this file's /api/v1/sync/:uid calls (both the
-// background POST and the polling GET below) were never updated to send
-// one, so they silently 401'd (fetch() doesn't reject on a non-2xx status,
-// so the POST's own .catch() never caught it either). Same token used by
-// SlsDbEngine.tsx / SlsAgentManager.tsx's own authenticated calls.
-const DEMO_TOKEN = "deadbeef01234567cafebabe76543210";
+// See src/lib/apiFetch.ts -- one shared auth helper for every kernel API
+// call in this app, after two rounds of discovering individual fetch()
+// call sites (here and in other components) that had been missed one at a
+// time. authFetch() is a drop-in fetch() replacement that always attaches
+// the bearer token.
+import { authFetch } from "./lib/apiFetch";
 
 import SlsMemoryMap from "./components/SlsMemoryMap";
 import SlsSecurityDashboard from "./components/SlsSecurityDashboard";
@@ -342,20 +340,16 @@ export default function App() {
     // Build memory map from loaded objects
     setMemoryPages(buildMemoryPages(loadedObjects));
 
-    // Seed/initialize backend space with loaded client copy
-    fetch(`/api/v1/sync/${user.id}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        objects: loadedObjects,
-        services: loadedServices,
-        walLogs: loadedWal,
-        systemMetrics: loadedMetrics,
-        systemState: loadedSysState,
-        lastUpdated: loadedLastUpdated,
-        apiKeys: user.apiKeys || []
-      })
-    }).catch(err => console.warn("Initial SLS Sync failed:", err));
+    // Cross-tab/device state sync via /api/v1/sync/:userId was disabled here
+    // (and at the other three call sites in this file) -- that route only
+    // ever existed in the Node dev server (server.ts), never in the real
+    // kernel (net/http.c). When this app is served directly by the kernel
+    // on :3001 (the normal deployment), the route 404s -- a real server
+    // with no matching handler, not an auth or reachability problem.
+    // localStorage is already this app's source of truth for all state
+    // (see the loads above), so dropping this best-effort "pull newer state
+    // from another tab/device" feature costs nothing today; it can come
+    // back if/when a real kernel-side handler for this route exists.
   };
 
   useEffect(() => {
@@ -393,7 +387,7 @@ export default function App() {
       return `0x${hex.slice(0,4)}_${hex.slice(4,8)}_${hex.slice(8,12)}_${hex.slice(12,16)}`;
     };
 
-    fetch("/api/objects")
+    authFetch("/api/objects")
       .then(r => r.json())
       .then((resp: any) => {
         const kernelObjs: any[] = resp?.objects ?? [];
@@ -440,12 +434,12 @@ export default function App() {
     const poll = async () => {
       try {
         const [healthRes, svcRes, walRes, tiersRes, objRes, metricsRes] = await Promise.all([
-          fetch("/api/health").then(r => r.json()).catch(() => null),
-          fetch("/api/services").then(r => r.json()).catch(() => null),
-          fetch("/api/wal").then(r => r.json()).catch(() => null),
-          fetch("/api/tiers").then(r => r.json()).catch(() => null),
-          fetch("/api/objects").then(r => r.json()).catch(() => null),
-          fetch("/api/metrics").then(r => r.json()).catch(() => null),
+          authFetch("/api/health").then(r => r.json()).catch(() => null),
+          authFetch("/api/services").then(r => r.json()).catch(() => null),
+          authFetch("/api/wal").then(r => r.json()).catch(() => null),
+          authFetch("/api/tiers").then(r => r.json()).catch(() => null),
+          authFetch("/api/objects").then(r => r.json()).catch(() => null),
+          authFetch("/api/metrics").then(r => r.json()).catch(() => null),
         ]);
 
         // ── Uptime from kernel tick counter (~10 ms per tick) ─────────────────
@@ -552,94 +546,21 @@ export default function App() {
     localStorage.setItem(`sls_system_state_${currentPortalUser.id}`, currentSysState);
     localStorage.setItem(`sls_last_updated_${currentPortalUser.id}`, String(timestamp));
 
-    // Synchronously send state update to backend
-    fetch(`/api/v1/sync/${currentPortalUser.id}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${DEMO_TOKEN}`
-      },
-      body: JSON.stringify({
-        objects: currentObjects,
-        services: currentServices,
-        walLogs: currentWalLogs,
-        systemMetrics: currentMetrics,
-        systemState: currentSysState,
-        lastUpdated: timestamp,
-        apiKeys: currentPortalUser.apiKeys || []
-      })
-    }).catch(err => console.warn("Background API sync failed:", err));
+    // Background /api/v1/sync push disabled -- see the header comment at
+    // the other call site above (kernel has no handler for this route in
+    // the normal :3001-direct deployment; localStorage above is already
+    // this app's source of truth).
   };
 
-  // Live polling for external API modification sync
-  useEffect(() => {
-    if (!currentPortalUser) return;
-
-    const syncInterval = setInterval(() => {
-      fetch(`/api/v1/sync/${currentPortalUser.id}`, {
-        headers: { "Authorization": `Bearer ${DEMO_TOKEN}` }
-      })
-        .then(res => res.json())
-        .then(data => {
-          if (data && data.state) {
-            const serverState = data.state;
-            const localSaved = localStorage.getItem(`sls_last_updated_${currentPortalUser.id}`);
-            const localTs = localSaved ? parseInt(localSaved, 10) : 0;
-
-            if (serverState.lastUpdated > localTs) {
-              console.log("[SLS REST API Sync] Server state newer. Syncing updates down...");
-              setObjects(serverState.objects);
-              setServices(serverState.services);
-              setWalLogs(serverState.walLogs);
-              setSystemMetrics(serverState.systemMetrics);
-              setSystemState(serverState.systemState);
-              setMemoryPages(buildMemoryPages(serverState.objects));
-              setLocalLastUpdated(serverState.lastUpdated);
-
-              localStorage.setItem(`sls_objects_${currentPortalUser.id}`, JSON.stringify(serverState.objects));
-              localStorage.setItem(`sls_services_${currentPortalUser.id}`, JSON.stringify(serverState.services));
-              localStorage.setItem(`sls_wal_logs_${currentPortalUser.id}`, JSON.stringify(serverState.walLogs));
-              localStorage.setItem(`sls_metrics_${currentPortalUser.id}`, JSON.stringify(serverState.systemMetrics));
-              localStorage.setItem(`sls_system_state_${currentPortalUser.id}`, serverState.systemState);
-              localStorage.setItem(`sls_last_updated_${currentPortalUser.id}`, String(serverState.lastUpdated));
-
-              if (serverState.apiKeys) {
-                const updatedUser = { ...currentPortalUser, apiKeys: serverState.apiKeys };
-                setCurrentPortalUser(updatedUser);
-                localStorage.setItem("sls_current_portal_user", JSON.stringify(updatedUser));
-                
-                // Update in global list
-                const savedRegistry = localStorage.getItem("sls_portal_users");
-                let registry = [];
-                if (savedRegistry) {
-                  try { registry = JSON.parse(savedRegistry); } catch (e) {}
-                }
-                const updatedRegistry = registry.map((u: any) => u.id === updatedUser.id ? updatedUser : u);
-                localStorage.setItem("sls_portal_users", JSON.stringify(updatedRegistry));
-              }
-            } else if (serverState.lastUpdated < localTs) {
-              // Server state is older or lost due to reboot, push local state to restore parity
-              fetch(`/api/v1/sync/${currentPortalUser.id}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  objects,
-                  services,
-                  walLogs,
-                  systemMetrics,
-                  systemState,
-                  lastUpdated: localTs,
-                  apiKeys: currentPortalUser.apiKeys || []
-                })
-              }).catch(() => {});
-            }
-          }
-        })
-        .catch(err => console.warn("Polling synchronization error:", err));
-    }, 3000);
-
-    return () => clearInterval(syncInterval);
-  }, [currentPortalUser, objects, services, walLogs, systemMetrics, systemState]);
+  // Live polling for external API modification sync -- disabled. This
+  // effect's only job was polling /api/v1/sync/:userId every 3s, a route
+  // that only ever existed in the Node dev server (server.ts), never in
+  // the real kernel (net/http.c). Against the normal :3001-direct
+  // deployment it 404s every cycle; removed rather than left firing
+  // requests against a route the running server doesn't implement. See the
+  // matching comment on the disabled call in the login-seed function above
+  // for the full rationale. localStorage remains this app's source of
+  // truth for state either way.
 
   // Keep ticking uptime metrics in background
   useEffect(() => {

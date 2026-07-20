@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Sparkles, Send, BrainCircuit, RefreshCw, MessageSquare, ArrowRight, HelpCircle, Bot } from "lucide-react";
 import { SlsObject, SlsSystemMetrics, MicrokernelService } from "../types/sls";
+import { authHeaders, authFetch } from "../lib/apiFetch";
 
 interface SlsAiCoprocessorProps {
   objects: SlsObject[];
@@ -32,11 +33,10 @@ export default function SlsAiCoprocessor({
   const [kernelAgents,        setKernelAgents]        = useState<{name:string;model:string;state:string}[]>([]);
   const [selectedKernelAgent, setSelectedKernelAgent] = useState("");
   const [kernelRunStatus,     setKernelRunStatus]     = useState<string | null>(null);
-  const AUTH_TOKEN = "deadbeef01234567cafebabe76543210";
 
   useEffect(() => {
     if (!kernelMode) return;
-    fetch("/api/agents")
+    authFetch("/api/agents")
       .then(r => r.json())
       .then(d => {
         const list = d.agents || [];
@@ -53,9 +53,9 @@ export default function SlsAiCoprocessor({
     setIsLoading(true);
     setKernelRunStatus(null);
     try {
-      const res = await fetch("/api/agent/run", {
+      const res = await authFetch("/api/agent/run", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${AUTH_TOKEN}` },
+        headers: authHeaders,
         body: JSON.stringify({ name: selectedKernelAgent, message }),
       });
       const data = await res.json();

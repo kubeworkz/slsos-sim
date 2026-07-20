@@ -7,8 +7,7 @@ import React, { useState, useEffect } from "react";
 import {
   Bot, Plus, Play, Trash2, RefreshCw, CheckCircle, AlertTriangle
 } from "lucide-react";
-
-const AUTH_TOKEN = "deadbeef01234567cafebabe76543210";
+import { authHeaders } from "../lib/apiFetch";
 
 interface AgentInfo {
   name: string;
@@ -52,10 +51,7 @@ export default function SlsAgentManager() {
   const [runLoading, setRunLoading] = useState(false);
   const [runResult,  setRunResult]  = useState<string | null>(null);
 
-  const authHeaders = {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${AUTH_TOKEN}`,
-  };
+  // authHeaders imported from ../lib/apiFetch (was a local re-declaration).
 
   const fetchAgents = async () => {
     setLoading(true);

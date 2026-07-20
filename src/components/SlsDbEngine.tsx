@@ -1,41 +1,24 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Database, BookOpen, BarChart3, Table2, RefreshCw, Play, Plus, Trash2, ChevronDown, ChevronRight, Upload, Terminal, FileText, Download, TerminalSquare, Rows3 } from "lucide-react";
 import { SlsObject, SlsUser } from "../types/sls";
+import { DEMO_TOKEN, authHeaders, authFetch } from "../lib/apiFetch";
 
 interface SlsDbEngineProps {
   objects: SlsObject[];
   activeUser: SlsUser | null;
 }
 
-type DbTab = "sql" | "schema" | "journal" | "mqt" | "aggregate" | "programs" | "streams";
-
-// Fixed at-boot demo admin token (dave@gridworkz.com / DB_ADMIN) — the same
-// token every other authenticated write in this file already uses (see
-// MqtDashboard/AggregateQueryBuilder below). Kept as one constant here so the
-// two new authenticated calls this tab adds (POST /api/sql, POST /api/tables)
-// don't re-hardcode the literal a third/fourth time.
-const DEMO_TOKEN = "deadbeef01234567cafebabe76543210";
+type DbTab = "sql" | "schema" | "journal" | "mqt" | "programs" | "streams";
 
 // ─── Shared fetch helper ──────────────────────────────────────────────────────
-// Gap Remediation Phase E put a bearer-token gate on every GET /api/* route
-// (net/http.c), but several call sites in this file (and SlsAgentManager.tsx)
-// only ever attached the token to POSTs, via a separately-hardcoded
-// authHeaders object per component. Those GETs 401'd (Journal Viewer, Schema
-// Explorer's /api/scan|constraints|indexes, MQT Dashboard's initial load) --
-// not because those tabs are special, but because kFetch itself never sent
-// auth and it was left to each call site to remember. Fixed at the one
-// shared choke point instead of patching every call site individually, so a
-// future new panel can't reintroduce the same silent-401 bug by forgetting a
-// header. Explicit opts.headers still take precedence/merge in if a caller
-// needs something extra.
+// kFetch is this file's own convenience wrapper (auto-parses JSON, unlike
+// authFetch/fetch) but now just forwards to the app-wide authFetch() in
+// ../lib/apiFetch so it can't drift out of sync with every other component's
+// auth handling again -- see that file's header comment for the history of
+// why a single shared choke point replaced each component's own local
+// token constant.
 async function kFetch(path: string, opts?: RequestInit) {
-  const r = await fetch(path, {
-    ...opts,
-    headers: {
-      "Authorization": `Bearer ${DEMO_TOKEN}`,
-      ...(opts?.headers || {}),
-    },
-  });
+  const r = await authFetch(path, opts);
   return r.json();
 }
 
@@ -86,7 +69,8 @@ function CreateTablePanel({ onCreated }: { onCreated: (name: string) => void }) 
   const [error, setError]     = useState("");
   const [busy, setBusy]       = useState(false);
 
-  const authHeaders = { "Content-Type": "application/json", "Authorization": `Bearer ${DEMO_TOKEN}` };
+  // authHeaders imported from ../lib/apiFetch (was a local re-declaration
+  // of the exact same object; using the shared one directly instead).
 
   const updateColumn = (i: number, patch: Partial<NewColumn>) =>
     setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, ...patch } : c));
@@ -230,7 +214,7 @@ function SqlConsole() {
     try {
       const data: SqlRunResult = await kFetch("/api/sql", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${DEMO_TOKEN}` },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query }),
       });
       setResult(data);
@@ -868,180 +852,6 @@ function MqtDashboard() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. AGGREGATE QUERY BUILDER
-// ─────────────────────────────────────────────────────────────────────────────
-function AggregateQueryBuilder({ objects }: { objects: SlsObject[] }) {
-  const [form, setForm] = useState({
-    table: "", fn: "COUNT", field: "", where: "", eq: "",
-    group_by: "", having: "", order_by: "", order: "ASC"
-  });
-  const [results, setResults] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState("");
-
-  const dbTables = objects.filter(o => (o as any).type === "DB_TABLE" || (o as any).type === 1);
-
-  const runQuery = async () => {
-    if (!form.table) { setError("Select a table first."); return; }
-    setError(""); setLoading(true);
-    try {
-      const body: any = { table: form.table, fn: form.fn };
-      if (form.field)    body.field    = form.field;
-      if (form.where)    body.where    = form.where;
-      if (form.eq)       body.eq       = form.eq;
-      if (form.group_by) body.group_by = form.group_by;
-      if (form.having)   body.having   = parseInt(form.having);
-      if (form.order_by) { body.order_by = form.order_by; body.order = form.order; }
-      const data = await kFetch("/api/aggregate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer deadbeef01234567cafebabe76543210" },
-        body: JSON.stringify(body),
-      });
-      setResults(data);
-    } catch (e: any) { setError(e.message); }
-    setLoading(false);
-  };
-
-  const resultRows: any[] = results?.results || results?.rows || [];
-  const isGrouped = resultRows.length > 0 && resultRows[0]?.group !== undefined;
-
-  return (
-    <div className="space-y-5">
-      {/* Query Form */}
-      <div className="border border-white/10 bg-[#0B0E14] p-5 space-y-4">
-        <span className="text-[9px] font-mono tracking-widest uppercase text-cyan-400">Build Query</span>
-        <div className="grid grid-cols-3 gap-3">
-          {/* Table */}
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/40 uppercase tracking-widest">Table *</label>
-            <select value={form.table} onChange={e => setForm(p => ({ ...p, table: e.target.value }))}
-              className="w-full bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-3 py-2 outline-none focus:border-cyan-400/50"
-            >
-              <option value="">— select —</option>
-              {dbTables.map((t: any) => <option key={t.name} value={t.name}>{t.name}</option>)}
-            </select>
-          </div>
-          {/* Function */}
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/40 uppercase tracking-widest">Function</label>
-            <select value={form.fn} onChange={e => setForm(p => ({ ...p, fn: e.target.value }))}
-              className="w-full bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-3 py-2 outline-none focus:border-cyan-400/50"
-            >
-              <option value="">— ORDER BY only —</option>
-              {["COUNT", "SUM", "AVG", "MIN", "MAX"].map(f => <option key={f}>{f}</option>)}
-            </select>
-          </div>
-          {/* Field */}
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/40 uppercase tracking-widest">Field suffix</label>
-            <input value={form.field} placeholder="score, dept, …" onChange={e => setForm(p => ({ ...p, field: e.target.value }))}
-              className="w-full bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-3 py-2 outline-none focus:border-cyan-400/50"
-            />
-          </div>
-          {/* WHERE */}
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/40 uppercase tracking-widest">WHERE field</label>
-            <input value={form.where} placeholder="dept" onChange={e => setForm(p => ({ ...p, where: e.target.value }))}
-              className="w-full bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-3 py-2 outline-none focus:border-cyan-400/50"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/40 uppercase tracking-widest">= value</label>
-            <input value={form.eq} placeholder="Engineering" onChange={e => setForm(p => ({ ...p, eq: e.target.value }))}
-              className="w-full bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-3 py-2 outline-none focus:border-cyan-400/50"
-            />
-          </div>
-          {/* GROUP BY */}
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/40 uppercase tracking-widest">GROUP BY field</label>
-            <input value={form.group_by} placeholder="dept" onChange={e => setForm(p => ({ ...p, group_by: e.target.value }))}
-              className="w-full bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-3 py-2 outline-none focus:border-cyan-400/50"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/40 uppercase tracking-widest">HAVING count ≥</label>
-            <input type="number" value={form.having} placeholder="2" onChange={e => setForm(p => ({ ...p, having: e.target.value }))}
-              className="w-full bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-3 py-2 outline-none focus:border-cyan-400/50"
-            />
-          </div>
-          {/* ORDER BY */}
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/40 uppercase tracking-widest">ORDER BY field</label>
-            <input value={form.order_by} placeholder="score" onChange={e => setForm(p => ({ ...p, order_by: e.target.value }))}
-              className="w-full bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-3 py-2 outline-none focus:border-cyan-400/50"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-[9px] font-mono text-white/40 uppercase tracking-widest">Direction</label>
-            <select value={form.order} onChange={e => setForm(p => ({ ...p, order: e.target.value }))}
-              className="w-full bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-3 py-2 outline-none focus:border-cyan-400/50"
-            >
-              <option>ASC</option>
-              <option>DESC</option>
-            </select>
-          </div>
-        </div>
-        <button onClick={runQuery} disabled={loading}
-          className="flex items-center gap-2 bg-cyan-400 text-[#0B0E14] font-mono text-xs font-bold uppercase tracking-widest px-6 py-2.5 hover:bg-cyan-300 transition-colors disabled:opacity-50"
-        >
-          <Play className="w-3.5 h-3.5" /> {loading ? "Running…" : "Run Query"}
-        </button>
-        {error && <p className="text-red-400 font-mono text-[11px]">{error}</p>}
-      </div>
-
-      {/* Results */}
-      {results && (
-        <div className="border border-white/10 bg-[#0B0E14] p-5 space-y-3">
-          <div className="flex items-center gap-3">
-            <span className="text-[9px] font-mono tracking-widest uppercase text-green-400">Results</span>
-            <span className="text-[9px] font-mono text-white/30">{results.table} · {results.fn || "SELECT"}{results.field ? ` · ${results.field}` : ""}</span>
-          </div>
-
-          {resultRows.length === 0 ? (
-            <p className="text-white/40 font-mono text-xs italic">No rows matched.</p>
-          ) : isGrouped ? (
-            <table className="w-full text-[11px] font-mono border-collapse">
-              <thead>
-                <tr className="border-b border-white/10 text-white/40 text-[9px] uppercase tracking-widest">
-                  <th className="text-left px-3 py-2">Group</th>
-                  <th className="text-left px-3 py-2">{results.fn}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {resultRows.map((r: any, i: number) => (
-                  <tr key={i} className="border-b border-white/5">
-                    <td className="px-3 py-2 text-cyan-300">{r.group}</td>
-                    <td className="px-3 py-2 text-white font-semibold">{r[results.fn?.toLowerCase()] ?? r.count ?? "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="flex flex-wrap gap-6">
-              {resultRows.map((r: any, i: number) => {
-                const keys = Object.keys(r).filter(k => k !== "group");
-                return keys.map(k => (
-                  <div key={`${i}-${k}`}>
-                    <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest block">{k}</span>
-                    <span className="text-3xl font-mono font-bold text-cyan-400">{r[k]}</span>
-                  </div>
-                ));
-              })}
-              {results.count !== undefined && (
-                <div>
-                  <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest block">rows scanned</span>
-                  <span className="text-3xl font-mono font-bold text-white/50">{results.count ?? resultRows.length}</span>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // 5. PROGRAM MANAGER
 // ─────────────────────────────────────────────────────────────────────────────
 interface ProgramEntry {
@@ -1071,13 +881,17 @@ function ProgramManager() {
 
   useEffect(() => { load(); }, [load]);
 
-  const tok = () => localStorage.getItem("sls_token") || "";
+  // authHeaders imported from ../lib/apiFetch. (These three calls used to
+  // build their own header via a local tok() = localStorage.getItem
+  // ("sls_token") -- a key nothing in this app ever sets, so every one of
+  // them was silently sending "Authorization: Bearer " with no token and
+  // 401'ing. Found while wiring up CSV import elsewhere in this file.)
 
   const handleCreate = async () => {
     if (!newName || !newPages) return;
     const r = await kFetch("/api/program/create", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok()}` },
+      headers: authHeaders,
       body: JSON.stringify({ name: newName, pages: parseInt(newPages, 10) }),
     });
     if (r.ok === "true") { flash(`✔ Created '${newName}'`); load(); setNewName(""); }
@@ -1092,7 +906,7 @@ function ProgramManager() {
       const isLast = offset + CHUNK >= upHex.length ? 1 : 0;
       const r = await kFetch("/api/program/upload", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok()}` },
+        headers: authHeaders,
         body: JSON.stringify({ name: upName, hex: slice, offset: offset / 2, last: isLast }),
       });
       if (r.ok !== "true") { flash(`✖ Upload failed: ${r.error}`); return; }
@@ -1105,7 +919,7 @@ function ProgramManager() {
     if (!spawnName) return;
     const r = await kFetch("/api/program/spawn", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok()}` },
+      headers: authHeaders,
       body: JSON.stringify({ name: spawnName }),
     });
     if (r.ok === "true") { setLastPid(r.pid); flash(`✔ Spawned '${spawnName}' as PID ${r.pid}`); load(); }
@@ -1207,6 +1021,93 @@ function ProgramManager() {
 // ─────────────────────────────────────────────────────────────────────────────
 interface StreamEntry { name: string; mime_type: string; size: number; }
 
+// ─── CSV → Table import helpers ────────────────────────────────────────────
+// A CSV upload doesn't go through the stream path at all (see the "CSV →
+// Table" mode toggle in StreamLibrary below): it's parsed client-side and
+// pushed through the same valloc -> schema -> tables -> INSERT sequence
+// CreateTablePanel (above, in the SQL Console section) already uses to build
+// a table by hand. No kernel changes needed -- that pipeline was already
+// complete and HTTP-reachable; this just drives it from a file instead of
+// a form. Constraints enforced client-side because the kernel enforces them
+// server-side anyway and a client-side check gives a much better error than
+// a mid-import HTTP failure: ROWSTORE_MAX_COLUMNS=16 (kernel/rowstore.h),
+// ROWSTORE_STRING_LEN=64 bytes per STRING cell including the NUL (so 63
+// usable chars), and SQL_MAX_TEXT_LEN=512 chars per statement
+// (kernel/sql_parser.h) -- INSERT has no multi-row VALUES support, so every
+// row is its own statement and has to fit that budget on its own.
+
+// Minimal RFC 4180 parser: quoted fields, "" as an escaped quote inside a
+// quoted field, commas/newlines inside quotes. Good enough for real-world
+// exported CSVs without pulling in a new dependency for a client-side demo
+// feature.
+function parseCsvText(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  let sawAny = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+      } else {
+        field += c;
+      }
+      continue;
+    }
+    if (c === '"') { inQuotes = true; sawAny = true; continue; }
+    if (c === ',') { row.push(field); field = ""; sawAny = true; continue; }
+    if (c === '\r') continue;
+    if (c === '\n') {
+      row.push(field); rows.push(row); row = []; field = ""; sawAny = false;
+      continue;
+    }
+    field += c; sawAny = true;
+  }
+  if (sawAny || field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  // Drop fully-blank trailing lines (common at EOF).
+  return rows.filter(r => !(r.length === 1 && r[0].trim() === ""));
+}
+
+// Infers a rowstore column type from a sample of a column's values. Order
+// matters: try the narrowest type first (an all-digit column is UINT64
+// before it's ever considered FLOAT or STRING).
+function inferCsvColumnType(values: string[]): string {
+  const sample = values.filter(v => v.trim() !== "").slice(0, 50);
+  if (sample.length === 0) return "STRING";
+  if (sample.every(v => /^\d+$/.test(v.trim()))) return "UINT64";
+  if (sample.every(v => /^-?\d+(\.\d+)?$/.test(v.trim()))) return "FLOAT";
+  if (sample.every(v => /^(true|false)$/i.test(v.trim()))) return "BOOL";
+  return "STRING";
+}
+
+// Renders one CSV cell as a SQL literal for the target column type. Never
+// throws -- an unparseable numeric value degrades to 0 with a warning
+// rather than aborting the whole row, since one bad cell in a 5,000-row
+// import shouldn't take the other 4,999 down with it.
+function csvCellToSqlLiteral(raw: string, type: string): { sql: string; warning?: string } {
+  const v = (raw ?? "").trim();
+  if (type === "UINT64") {
+    if (!/^\d+$/.test(v)) return { sql: "0", warning: `non-numeric value "${v}" → 0` };
+    return { sql: v };
+  }
+  if (type === "FLOAT") {
+    if (!/^-?\d+(\.\d+)?$/.test(v)) return { sql: "0", warning: `non-numeric value "${v}" → 0` };
+    return { sql: v };
+  }
+  if (type === "BOOL") {
+    return { sql: /^true$/i.test(v) ? "TRUE" : "FALSE" };
+  }
+  // STRING -- ROWSTORE_STRING_LEN is 64 bytes including the NUL terminator,
+  // so 63 usable characters; '' is this SQL dialect's escaped single quote
+  // (kernel/sql_parser.c's lexer, standard SQL convention).
+  let s = v;
+  let warning: string | undefined;
+  if (s.length > 63) { s = s.slice(0, 63); warning = `truncated to 63 chars`; }
+  return { sql: `'${s.replace(/'/g, "''")}'`, warning };
+}
+
 function StreamLibrary() {
   const [streams, setStreams]       = useState<StreamEntry[]>([]);
   const [loading, setLoading]       = useState(true);
@@ -1219,12 +1120,33 @@ function StreamLibrary() {
   const [uploading, setUploading]   = useState(false);
   const fileRef                     = useRef<HTMLInputElement>(null);
 
+  // ── CSV → Table mode ──────────────────────────────────────────────────
+  // A second upload path alongside the raw-stream one above: parses the
+  // file client-side into rows and drives the existing valloc -> schema ->
+  // tables -> INSERT pipeline (see the helper functions above this
+  // component) instead of storing the bytes as an opaque OBJ_TYPE_STREAM.
+  const [upMode, setUpMode]           = useState<"file" | "csv">("file");
+  const [csvFile, setCsvFile]         = useState<File | null>(null);
+  const [csvTableName, setCsvTableName] = useState("");
+  const [csvColumns, setCsvColumns]   = useState<{ name: string; type: string }[]>([]);
+  const [csvRows, setCsvRows]         = useState<string[][]>([]);
+  const [csvParseError, setCsvParseError] = useState("");
+  const [csvBusy, setCsvBusy]         = useState(false);
+  const [csvStep, setCsvStep]         = useState("");
+  const [csvProgress, setCsvProgress] = useState({ done: 0, total: 0, failed: 0 });
+  const [csvResult, setCsvResult]     = useState<{ ok: number; failed: number; warned: number; failMsgs: string[]; table: string } | null>(null);
+  const csvFileRef                    = useRef<HTMLInputElement>(null);
+
+  const CSV_MAX_ROWS = 5000;      // sequential one-row-per-request INSERTs -- see helper comment above
+  const CSV_MAX_COLUMNS = 16;     // ROWSTORE_MAX_COLUMNS (kernel/rowstore.h)
+
   // 16 KiB binary per request = 32 KiB hex, safely under the 64 KiB req_buf
   const BINARY_CHUNK = 16384;
   const MAX_FILE_SIZE = 64 * 1024 * 1024; // 64 MiB (STREAM_MAX_FRAMES × 4 KiB)
 
   const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 5000); };
-  const tok   = () => localStorage.getItem("sls_token") || "";
+  // authHeaders imported from ../lib/apiFetch (was a dead-token local tok()
+  // -- see the comment on ProgramManager's own copy of this bug, above).
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1254,7 +1176,7 @@ function StreamLibrary() {
     // 1. Create the stream object
     const cr = await kFetch("/api/stream/create", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok()}` },
+      headers: authHeaders,
       body: JSON.stringify({ name: upName, mime: upMime }),
     });
     if (cr.ok !== "true" && cr.error !== "already exists") {
@@ -1272,7 +1194,7 @@ function StreamLibrary() {
 
       const ur = await kFetch("/api/stream/upload", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok()}` },
+        headers: authHeaders,
         body: JSON.stringify({ name: upName, hex, offset: byteOff, last: isLast }),
       });
       if (ur.ok !== "true") {
@@ -1291,7 +1213,7 @@ function StreamLibrary() {
 
   const handleDownload = async (name: string, mime: string) => {
     try {
-      const r = await fetch(`/api/stream/${name}`);
+      const r = await authFetch(`/api/stream/${name}`);
       if (!r.ok) { flash(`✖ Download failed: ${r.status}`); return; }
       const blob = await r.blob();
       const url  = URL.createObjectURL(new Blob([blob], { type: mime }));
@@ -1299,6 +1221,119 @@ function StreamLibrary() {
       a.href = url; a.download = name; a.click();
       URL.revokeObjectURL(url);
     } catch (_) { flash("✖ Download error"); }
+  };
+
+  // ── CSV → Table handlers ──────────────────────────────────────────────
+  const csvUpdateColumn = (i: number, patch: Partial<{ name: string; type: string }>) =>
+    setCsvColumns(prev => prev.map((c, ci) => ci === i ? { ...c, ...patch } : c));
+
+  const handleCsvFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvResult(null);
+    setCsvParseError("");
+    setCsvFile(file);
+    setCsvTableName(file.name.replace(/\.csv$/i, "").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 48));
+
+    file.text().then(text => {
+      const parsed = parseCsvText(text);
+      if (parsed.length < 2) {
+        setCsvParseError("CSV needs a header row plus at least one data row.");
+        setCsvColumns([]); setCsvRows([]);
+        return;
+      }
+      const header = parsed[0].map(h => h.trim().replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 63) || "col");
+      const data   = parsed.slice(1);
+
+      if (header.length > CSV_MAX_COLUMNS) {
+        setCsvParseError(`CSV has ${header.length} columns; row-store tables support at most ${CSV_MAX_COLUMNS}. Trim the file and re-upload.`);
+        setCsvColumns([]); setCsvRows([]);
+        return;
+      }
+      if (data.length > CSV_MAX_ROWS) {
+        setCsvParseError(`CSV has ${data.length} data rows; this uploader imports at most ${CSV_MAX_ROWS} rows at a time (each row is its own request). Split the file and re-upload.`);
+        setCsvColumns([]); setCsvRows([]);
+        return;
+      }
+
+      const inferred = header.map((name, ci) => ({
+        name,
+        type: inferCsvColumnType(data.map(r => r[ci] ?? "")),
+      }));
+      setCsvColumns(inferred);
+      setCsvRows(data);
+    }).catch(() => setCsvParseError("Could not read file as text."));
+  };
+
+  const handleCsvImport = async () => {
+    const tname = csvTableName.trim();
+    if (!tname || csvColumns.length === 0 || csvRows.length === 0) return;
+    if (csvColumns.some(c => !c.name.trim())) { setCsvParseError("Every column needs a name."); return; }
+
+    setCsvBusy(true); setCsvParseError(""); setCsvResult(null);
+    setCsvProgress({ done: 0, total: csvRows.length, failed: 0 });
+
+    try {
+      setCsvStep("Allocating object…");
+      // Rough page estimate: (rows × row width) / 4 KiB, at least 2 pages
+      // (CreateTablePanel's own default), capped at 64 (its own max).
+      const rowBytes = 1 + csvColumns.length * 64; // tombstone byte + one ROWSTORE_STRING_LEN slot/column
+      const pages = Math.max(2, Math.min(64, Math.ceil((csvRows.length * rowBytes) / 4096) + 1));
+      const vr = await kFetch("/api/valloc", {
+        method: "POST", headers: authHeaders,
+        body: JSON.stringify({ name: tname, type: 1 /* DB_TABLE */, pages }),
+      });
+      if (vr?.ok !== "true") { setCsvParseError(`valloc failed: ${vr?.error || "unknown error"}`); setCsvBusy(false); return; }
+
+      setCsvStep("Defining columns…");
+      const sr = await kFetch("/api/schema", {
+        method: "POST", headers: authHeaders,
+        body: JSON.stringify({ name: tname, columns: csvColumns.map(c => ({ name: c.name.trim(), type: c.type })) }),
+      });
+      if (sr?.ok !== "true") { setCsvParseError(`schema definition failed: ${sr?.error || "unknown error"}`); setCsvBusy(false); return; }
+
+      setCsvStep("Promoting to row-store…");
+      const pr = await kFetch("/api/tables", {
+        method: "POST", headers: authHeaders,
+        body: JSON.stringify({ name: tname }),
+      });
+      if (pr?.ok !== "true") { setCsvParseError(`promotion to row-store failed: ${pr?.error || "unknown error"}`); setCsvBusy(false); return; }
+
+      setCsvStep("Importing rows…");
+      const colNames = csvColumns.map(c => c.name.trim()).join(", ");
+      let ok = 0, failed = 0, warned = 0;
+      const failMsgs: string[] = [];
+
+      for (let r = 0; r < csvRows.length; r++) {
+        const row = csvRows[r];
+        const literals = csvColumns.map((c, ci) => {
+          const lit = csvCellToSqlLiteral(row[ci] ?? "", c.type);
+          if (lit.warning) warned++;
+          return lit.sql;
+        });
+        const sql = `INSERT INTO ${tname} (${colNames}) VALUES (${literals.join(", ")})`;
+
+        if (sql.length > 500) {          // SQL_MAX_TEXT_LEN=512, leave a small margin
+          failed++;
+          if (failMsgs.length < 5) failMsgs.push(`row ${r + 2}: statement too long (${sql.length} chars) -- shorten string values or drop columns`);
+        } else {
+          try {
+            const ir = await kFetch("/api/sql", { method: "POST", headers: authHeaders, body: JSON.stringify({ query: sql }) });
+            if (ir?.ok === "true") ok++;
+            else { failed++; if (failMsgs.length < 5) failMsgs.push(`row ${r + 2}: ${ir?.error || "insert failed"}`); }
+          } catch (e: any) {
+            failed++; if (failMsgs.length < 5) failMsgs.push(`row ${r + 2}: ${e?.message || "request failed"}`);
+          }
+        }
+        setCsvProgress({ done: r + 1, total: csvRows.length, failed });
+      }
+
+      setCsvResult({ ok, failed, warned, failMsgs, table: tname });
+      setCsvFile(null); setCsvColumns([]); setCsvRows([]);
+      if (csvFileRef.current) csvFileRef.current.value = "";
+    } finally {
+      setCsvBusy(false); setCsvStep("");
+    }
   };
 
   const fmtSize = (n: number) =>
@@ -1350,43 +1385,130 @@ function StreamLibrary() {
 
       {/* Upload panel */}
       <div className="bg-[#0B0E14] border border-white/10 p-6 space-y-4">
-        <span className="font-mono text-[10px] tracking-widest text-amber-400 uppercase font-semibold flex items-center gap-2">
-          <FileText className="w-3.5 h-3.5" /> Upload File
-        </span>
-        <p className="text-[10px] text-white/40 font-mono leading-relaxed">
-          Any file type up to 64 MiB. Streamed in 16 KiB chunks — only one chunk in memory at a time. Stored as <code>OBJ_TYPE_STREAM</code>; journaled and indexed automatically.
-        </p>
-        <input ref={fileRef} type="file" onChange={handleFileChange}
-          className="w-full text-[11px] font-mono text-white/60 bg-[#0d1117] border border-white/10 px-3 py-2 file:mr-3 file:bg-amber-500/10 file:border file:border-amber-500/30 file:text-amber-300 file:text-[10px] file:font-mono file:uppercase file:tracking-widest file:px-3 file:py-1 file:cursor-pointer" />
-        {upSize > 0 && (
-          <div className="text-[10px] font-mono text-white/50 space-y-1">
-            <div>Name: <span className="text-white/80">{upName}</span></div>
-            <div>MIME: <span className="text-white/80">{upMime}</span></div>
-            <div>Size: <span className={`${upSize > MAX_FILE_SIZE ? "text-red-400" : "text-emerald-400"}`}>
-              {fmtSize(upSize)}{upSize > MAX_FILE_SIZE ? " — exceeds 64 MiB limit" : ""}
-            </span></div>
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-[10px] tracking-widest text-amber-400 uppercase font-semibold flex items-center gap-2">
+            <FileText className="w-3.5 h-3.5" /> Upload
+          </span>
+          <div className="flex border border-white/10 text-[9px] font-mono uppercase tracking-widest">
+            <button onClick={() => setUpMode("file")}
+              className={`px-3 py-1.5 transition-colors ${upMode === "file" ? "bg-amber-500/15 text-amber-300" : "text-white/40 hover:text-white/70"}`}>
+              Raw File
+            </button>
+            <button onClick={() => setUpMode("csv")}
+              className={`px-3 py-1.5 border-l border-white/10 transition-colors flex items-center gap-1.5 ${upMode === "csv" ? "bg-cyan-500/15 text-cyan-300" : "text-white/40 hover:text-white/70"}`}>
+              <Rows3 className="w-3 h-3" /> CSV → Table
+            </button>
           </div>
-        )}
-        <div className="flex gap-3">
-          <input value={upName} onChange={e => setUpName(e.target.value)} placeholder="object name (auto-filled)"
-            className="flex-1 bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
-          <input value={upMime} onChange={e => setUpMime(e.target.value)} placeholder="mime type"
-            className="flex-1 bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
         </div>
-        {uploading && (
-          <div className="space-y-1">
-            <div className="flex justify-between text-[10px] font-mono text-white/40">
-              <span>UPLOADING…</span><span>{upProgress}%</span>
+
+        {upMode === "file" ? (
+          <>
+            <p className="text-[10px] text-white/40 font-mono leading-relaxed">
+              Any file type up to 64 MiB. Streamed in 16 KiB chunks — only one chunk in memory at a time. Stored as <code>OBJ_TYPE_STREAM</code>; journaled and indexed automatically.
+            </p>
+            <input ref={fileRef} type="file" onChange={handleFileChange}
+              className="w-full text-[11px] font-mono text-white/60 bg-[#0d1117] border border-white/10 px-3 py-2 file:mr-3 file:bg-amber-500/10 file:border file:border-amber-500/30 file:text-amber-300 file:text-[10px] file:font-mono file:uppercase file:tracking-widest file:px-3 file:py-1 file:cursor-pointer" />
+            {upSize > 0 && (
+              <div className="text-[10px] font-mono text-white/50 space-y-1">
+                <div>Name: <span className="text-white/80">{upName}</span></div>
+                <div>MIME: <span className="text-white/80">{upMime}</span></div>
+                <div>Size: <span className={`${upSize > MAX_FILE_SIZE ? "text-red-400" : "text-emerald-400"}`}>
+                  {fmtSize(upSize)}{upSize > MAX_FILE_SIZE ? " — exceeds 64 MiB limit" : ""}
+                </span></div>
+              </div>
+            )}
+            <div className="flex gap-3">
+              <input value={upName} onChange={e => setUpName(e.target.value)} placeholder="object name (auto-filled)"
+                className="flex-1 bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
+              <input value={upMime} onChange={e => setUpMime(e.target.value)} placeholder="mime type"
+                className="flex-1 bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
             </div>
-            <div className="w-full bg-white/5 h-1">
-              <div className="bg-amber-400 h-1 transition-all" style={{ width: `${upProgress}%` }} />
-            </div>
-          </div>
+            {uploading && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-[10px] font-mono text-white/40">
+                  <span>UPLOADING…</span><span>{upProgress}%</span>
+                </div>
+                <div className="w-full bg-white/5 h-1">
+                  <div className="bg-amber-400 h-1 transition-all" style={{ width: `${upProgress}%` }} />
+                </div>
+              </div>
+            )}
+            <button onClick={handleUpload} disabled={!upFile || uploading || upSize > MAX_FILE_SIZE}
+              className="w-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-mono tracking-widest uppercase py-2 hover:bg-amber-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+              {uploading ? `UPLOADING ${upProgress}%` : "STORE STREAM"}
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="text-[10px] text-white/40 font-mono leading-relaxed">
+              Parses the CSV in your browser and creates a real row-store table from it — one <code>valloc</code> + <code>schema</code> + <code>tables</code> call, then one <code>INSERT</code> per row through the SQL engine. Not stored as a stream. Up to {CSV_MAX_COLUMNS} columns and {CSV_MAX_ROWS.toLocaleString()} rows per import; string cells over 63 characters are truncated.
+            </p>
+            <input ref={csvFileRef} type="file" accept=".csv,text/csv" onChange={handleCsvFileChange}
+              className="w-full text-[11px] font-mono text-white/60 bg-[#0d1117] border border-white/10 px-3 py-2 file:mr-3 file:bg-cyan-500/10 file:border file:border-cyan-500/30 file:text-cyan-300 file:text-[10px] file:font-mono file:uppercase file:tracking-widest file:px-3 file:py-1 file:cursor-pointer" />
+
+            {csvParseError && <p className="text-[10px] font-mono text-red-400/80 leading-relaxed">{csvParseError}</p>}
+
+            {csvColumns.length > 0 && (
+              <div className="space-y-3">
+                <input value={csvTableName} onChange={e => setCsvTableName(e.target.value)} placeholder="table name"
+                  className="w-full bg-[#0d1117] border border-white/10 px-3 py-2 text-[11px] font-mono text-white/80 outline-none focus:border-cyan-500/50" />
+
+                <div className="text-[9px] font-mono text-white/40 uppercase tracking-widest">
+                  {csvRows.length.toLocaleString()} rows detected — review inferred columns
+                </div>
+                <div className="space-y-1.5">
+                  {csvColumns.map((c, i) => (
+                    <div key={i} className="flex gap-1.5">
+                      <input value={c.name} onChange={e => csvUpdateColumn(i, { name: e.target.value })}
+                        className="flex-1 min-w-0 bg-[#0F1219] border border-white/10 text-white font-mono text-[11px] px-2 py-1.5 outline-none focus:border-cyan-400/50" />
+                      <select value={c.type} onChange={e => csvUpdateColumn(i, { type: e.target.value })}
+                        className="bg-[#0F1219] border border-white/10 text-white/70 font-mono text-[11px] px-1.5 py-1.5 outline-none focus:border-cyan-400/50">
+                        {COLUMN_TYPES.map(t => <option key={t}>{t}</option>)}
+                      </select>
+                      <span className="text-[9px] font-mono text-white/30 self-center w-24 truncate" title={csvRows[0]?.[i]}>
+                        e.g. {csvRows[0]?.[i] || "—"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {csvBusy && (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px] font-mono text-white/40">
+                      <span>{csvStep || "IMPORTING…"}</span>
+                      {csvProgress.total > 0 && <span>{csvProgress.done}/{csvProgress.total}{csvProgress.failed ? ` (${csvProgress.failed} failed)` : ""}</span>}
+                    </div>
+                    <div className="w-full bg-white/5 h-1">
+                      <div className="bg-cyan-400 h-1 transition-all"
+                        style={{ width: csvProgress.total ? `${Math.round((csvProgress.done / csvProgress.total) * 100)}%` : "0%" }} />
+                    </div>
+                  </div>
+                )}
+
+                <button onClick={handleCsvImport} disabled={csvBusy || !csvTableName.trim()}
+                  className="w-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-[10px] font-mono tracking-widest uppercase py-2 hover:bg-cyan-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                  {csvBusy ? "IMPORTING…" : `CREATE TABLE + IMPORT ${csvRows.length.toLocaleString()} ROWS`}
+                </button>
+              </div>
+            )}
+
+            {csvResult && (
+              <div className={`border px-3 py-2 text-[11px] font-mono space-y-1 ${csvResult.failed ? "bg-amber-900/20 border-amber-700/30 text-amber-300" : "bg-emerald-900/20 border-emerald-700/30 text-emerald-300"}`}>
+                <div>
+                  ✔ Table '{csvResult.table}' created — {csvResult.ok} row{csvResult.ok === 1 ? "" : "s"} imported
+                  {csvResult.failed ? `, ${csvResult.failed} failed` : ""}
+                  {csvResult.warned ? `, ${csvResult.warned} cell${csvResult.warned === 1 ? "" : "s"} coerced/truncated` : ""}.
+                </div>
+                {csvResult.failMsgs.length > 0 && (
+                  <ul className="text-white/50 text-[10px] list-disc list-inside">
+                    {csvResult.failMsgs.map((m, i) => <li key={i}>{m}</li>)}
+                  </ul>
+                )}
+                <div className="text-white/40 text-[10px]">Query it from the SQL Console tab: <code>SELECT * FROM {csvResult.table}</code></div>
+              </div>
+            )}
+          </>
         )}
-        <button onClick={handleUpload} disabled={!upFile || uploading || upSize > MAX_FILE_SIZE}
-          className="w-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-mono tracking-widest uppercase py-2 hover:bg-amber-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-          {uploading ? `UPLOADING ${upProgress}%` : "STORE STREAM"}
-        </button>
       </div>
     </div>
   );
@@ -1401,7 +1523,6 @@ const DB_TABS: { key: DbTab; label: string; icon: React.ReactNode }[] = [
   { key: "schema",    label: "Schema Explorer",    icon: <Database  className="w-3.5 h-3.5" /> },
   { key: "journal",   label: "Journal Viewer",     icon: <BookOpen  className="w-3.5 h-3.5" /> },
   { key: "mqt",       label: "MQT Dashboard",      icon: <BarChart3 className="w-3.5 h-3.5" /> },
-  { key: "aggregate", label: "Query Builder",      icon: <Play      className="w-3.5 h-3.5" /> },
   { key: "programs",  label: "Program Manager",    icon: <Upload    className="w-3.5 h-3.5" /> },
   { key: "streams",   label: "Stream Library",     icon: <FileText  className="w-3.5 h-3.5" /> },
 ];
@@ -1446,7 +1567,6 @@ export default function SlsDbEngine({ objects, activeUser }: SlsDbEngineProps) {
         {dbTab === "schema"    && <SchemaExplorer />}
         {dbTab === "journal"   && <JournalViewer />}
         {dbTab === "mqt"       && <MqtDashboard />}
-        {dbTab === "aggregate" && <AggregateQueryBuilder objects={objects} />}
         {dbTab === "programs"  && <ProgramManager />}
         {dbTab === "streams"   && <StreamLibrary />}
       </div>

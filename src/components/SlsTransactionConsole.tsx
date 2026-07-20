@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { SlsObject, Transaction, WalLogEntry, StorageTier } from "../types/sls";
 import { Database, AlertOctagon, RefreshCw, CheckCircle, ArrowRight, Play, Check, Trash, Zap, Download, Plus, Terminal, Save, ShieldAlert, HelpCircle, Lock } from "lucide-react";
 import { generateChecksum } from "../lib/slsEngine";
+import { authFetch } from "../lib/apiFetch";
 
 interface LockEntry {
   tx: string;
@@ -55,7 +56,7 @@ export default function SlsTransactionConsole({
 
   const fetchLocks = () => {
     setLocksLoading(true);
-    fetch("/api/locks")
+    authFetch("/api/locks")
       .then(r => r.ok ? r.json() : [])
       .then((data: LockEntry[]) => { setLocks(data); })
       .catch(() => { setLocks([]); })

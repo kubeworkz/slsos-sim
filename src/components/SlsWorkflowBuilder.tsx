@@ -6,8 +6,7 @@ import React, { useState, useEffect } from "react";
 import {
   GitBranch, Plus, Play, Trash2, RefreshCw, CheckCircle, AlertTriangle, ChevronRight
 } from "lucide-react";
-
-const AUTH_TOKEN = "deadbeef01234567cafebabe76543210";
+import { authHeaders, authFetch } from "../lib/apiFetch";
 
 interface WorkflowInfo {
   name: string;
@@ -43,16 +42,13 @@ export default function SlsWorkflowBuilder() {
   const [runLoading,  setRunLoading]  = useState(false);
   const [runResult,   setRunResult]   = useState<string | null>(null);
 
-  const authHeaders = {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${AUTH_TOKEN}`,
-  };
+  // authHeaders imported from ../lib/apiFetch (was a local re-declaration).
 
   const fetchWorkflows = async () => {
     setLoading(true);
     setFetchError(null);
     try {
-      const res = await fetch("/api/workflows");
+      const res = await authFetch("/api/workflows");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setWorkflows(data.workflows || []);
