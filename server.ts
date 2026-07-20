@@ -9,19 +9,31 @@ dotenv.config();
 
 // Proxy to the live AeroSLS kernel. Uses pathFilter (not app.use path) so the
 // full URL path is preserved and forwarded to the kernel.
+//
+// pathFilter is a prefix-matching function rather than a hardcoded list of
+// kernel routes (Operational Phase E) -- the old array went stale every time
+// a new /api/* route was added kernel-side (confirmed missing /api/sql,
+// /api/schema, /api/vec/*, /api/partitions, /api/journal*, /api/cursor/*,
+// /api/simi/*, /api/shell/exec at the time this was fixed), silently 404ing
+// in local dev (`npm run dev`) until someone noticed and updated this list
+// by hand. Everything under /api/ and /auth/ is now proxied to the kernel
+// EXCEPT the local-only route families below, which are handled by Express
+// routes further down this file and must never reach the kernel.
+const LOCAL_ONLY_API_PREFIXES = ["/api/health", "/api/ai", "/api/v1"];
+
+function isLocalOnlyApiPath(pathname: string): boolean {
+  return LOCAL_ONLY_API_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(prefix + "/")
+  );
+}
+
 const kernelProxy = createProxyMiddleware({
   target: "http://localhost:3001",
   changeOrigin: true,
-  pathFilter: [
-    "/api/scan", "/api/objects", "/api/services", "/api/wal",
-    "/api/tiers", "/api/processes", "/api/query",
-    "/api/valloc", "/api/record", "/api/tx",
-    "/api/agents", "/api/agent",
-    "/api/workflows", "/api/workflow",
-    "/api/constraints", "/api/indexes", "/api/tables",
-    "/api/aggregate", "/api/mqt", "/api/programs", "/api/streams",
-    "/auth/token", "/auth/verify",
-  ],
+  pathFilter: (pathname) => {
+    if (isLocalOnlyApiPath(pathname)) return false;
+    return pathname.startsWith("/api/") || pathname.startsWith("/auth/");
+  },
   on: {
     error: (_err: any, _req: any, res: any) => {
       if (res && !res.headersSent) {

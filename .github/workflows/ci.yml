@@ -1,0 +1,38 @@
+name: CI
+
+# Operational Phase A (aerosls2/docs/AeroSLS-Architectural-MVP-Roadmap-v0.1.md
+# and .../AeroSLS-Operational-MVP-Roadmap-v0.1.md -- this repo doesn't carry
+# its own docs/ directory, the roadmap docs live in the sibling aerosls2
+# repo since they cover both repos' work together).
+#
+# Runs typecheck + the shell-command-router host test on every push/PR --
+# both already existed and worked when run by hand (`npm run lint`,
+# `npm run test`), this just makes them run automatically. Doesn't run
+# `npm run build` here: that requires network access to fetch nothing new,
+# but more importantly this repo's build output (kernel/webapp_bundle.c in
+# the sibling aerosls2 repo) is a separate, manual `make bundle` step tied
+# to a kernel deploy, not something CI on this repo alone should produce.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Shell command router host test
+        run: npm run test
