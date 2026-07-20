@@ -17,16 +17,25 @@ import {
   SlsObjectType,
   PortalUser
 } from "./types/sls";
-import { 
-  INITIAL_SERVICES, 
-  INITIAL_OBJECTS, 
-  INITIAL_METRICS, 
-  INITIAL_WAL_LOGS, 
-  buildMemoryPages, 
+import {
+  INITIAL_SERVICES,
+  INITIAL_OBJECTS,
+  INITIAL_METRICS,
+  INITIAL_WAL_LOGS,
+  buildMemoryPages,
   generateChecksum,
   generateRandomAddress,
   DEFAULT_ACL
 } from "./lib/slsEngine";
+
+// Fixed at-boot demo admin token (dave@gridworkz.com / DB_ADMIN) -- Gap
+// Remediation Phase E gated every GET /api/* route behind a bearer token
+// (net/http.c), and this file's /api/v1/sync/:uid calls (both the
+// background POST and the polling GET below) were never updated to send
+// one, so they silently 401'd (fetch() doesn't reject on a non-2xx status,
+// so the POST's own .catch() never caught it either). Same token used by
+// SlsDbEngine.tsx / SlsAgentManager.tsx's own authenticated calls.
+const DEMO_TOKEN = "deadbeef01234567cafebabe76543210";
 
 import SlsMemoryMap from "./components/SlsMemoryMap";
 import SlsSecurityDashboard from "./components/SlsSecurityDashboard";
@@ -546,7 +555,10 @@ export default function App() {
     // Synchronously send state update to backend
     fetch(`/api/v1/sync/${currentPortalUser.id}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${DEMO_TOKEN}`
+      },
       body: JSON.stringify({
         objects: currentObjects,
         services: currentServices,
@@ -564,7 +576,9 @@ export default function App() {
     if (!currentPortalUser) return;
 
     const syncInterval = setInterval(() => {
-      fetch(`/api/v1/sync/${currentPortalUser.id}`)
+      fetch(`/api/v1/sync/${currentPortalUser.id}`, {
+        headers: { "Authorization": `Bearer ${DEMO_TOKEN}` }
+      })
         .then(res => res.json())
         .then(data => {
           if (data && data.state) {

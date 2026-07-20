@@ -9,18 +9,35 @@ interface SlsDbEngineProps {
 
 type DbTab = "sql" | "schema" | "journal" | "mqt" | "aggregate" | "programs" | "streams";
 
-// ─── Shared fetch helper ──────────────────────────────────────────────────────
-async function kFetch(path: string, opts?: RequestInit) {
-  const r = await fetch(path, opts);
-  return r.json();
-}
-
 // Fixed at-boot demo admin token (dave@gridworkz.com / DB_ADMIN) — the same
 // token every other authenticated write in this file already uses (see
 // MqtDashboard/AggregateQueryBuilder below). Kept as one constant here so the
 // two new authenticated calls this tab adds (POST /api/sql, POST /api/tables)
 // don't re-hardcode the literal a third/fourth time.
 const DEMO_TOKEN = "deadbeef01234567cafebabe76543210";
+
+// ─── Shared fetch helper ──────────────────────────────────────────────────────
+// Gap Remediation Phase E put a bearer-token gate on every GET /api/* route
+// (net/http.c), but several call sites in this file (and SlsAgentManager.tsx)
+// only ever attached the token to POSTs, via a separately-hardcoded
+// authHeaders object per component. Those GETs 401'd (Journal Viewer, Schema
+// Explorer's /api/scan|constraints|indexes, MQT Dashboard's initial load) --
+// not because those tabs are special, but because kFetch itself never sent
+// auth and it was left to each call site to remember. Fixed at the one
+// shared choke point instead of patching every call site individually, so a
+// future new panel can't reintroduce the same silent-401 bug by forgetting a
+// header. Explicit opts.headers still take precedence/merge in if a caller
+// needs something extra.
+async function kFetch(path: string, opts?: RequestInit) {
+  const r = await fetch(path, {
+    ...opts,
+    headers: {
+      "Authorization": `Bearer ${DEMO_TOKEN}`,
+      ...(opts?.headers || {}),
+    },
+  });
+  return r.json();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 0. SQL CONSOLE / TABLES BROWSER

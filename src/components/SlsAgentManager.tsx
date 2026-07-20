@@ -61,7 +61,7 @@ export default function SlsAgentManager() {
     setLoading(true);
     setFetchError(null);
     try {
-      const res = await fetch("/api/agents");
+      const res = await fetch("/api/agents", { headers: authHeaders });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAgents(data.agents || []);
