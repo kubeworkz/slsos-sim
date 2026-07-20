@@ -64,15 +64,24 @@ interface CommandSpec {
 // (§10.1); and "delete object" was removed outright -- it was never a real
 // shell.c command, just an invented alias for vfree that would have always
 // failed with "Unknown command" once actually sent to the kernel.
+//
+// Architectural Phase 4 (docs/AeroSLS-Architectural-MVP-Roadmap-v0.1.md):
+// "auth create" now takes a trailing <password> too (previously an account
+// with no password could later have its live token handed to anyone who
+// just knew its email via POST /auth/token) and, along with "auth revoke",
+// now requires the caller to already be DB_ADMIN or higher -- a privilege-
+// escalation gap (any session could mint itself a DB_ADMIN account) found
+// and closed in the same pass. Both marked destructive here to match: they
+// mutate real account/credential state, same bar as role set/grant/revoke/chmod.
 const SHELL_FALLBACK_COMMANDS: Record<string, { usage: string; destructive?: boolean }> = {
   "login":            { usage: "login <uid> <gid>" },
   "role set":         { usage: "role set <uid> <SYSTEM_KERNEL|DB_ADMIN|APP_USER|GUEST>", destructive: true },
   "grant":            { usage: "grant <uid> <object> <perm>", destructive: true },
   "revoke":           { usage: "revoke <uid> <object> <perm>", destructive: true },
   "chmod":            { usage: "chmod <name> <mask_hex>", destructive: true },
-  "auth create":      { usage: "auth create <email> <uid> <SYSTEM_KERNEL|DB_ADMIN|APP_USER|GUEST>" },
+  "auth create":      { usage: "auth create <email> <uid> <SYSTEM_KERNEL|DB_ADMIN|APP_USER|GUEST> <password> (requires DB_ADMIN+)", destructive: true },
   "auth list":        { usage: "auth list" },
-  "auth revoke":      { usage: "auth revoke <email>", destructive: true },
+  "auth revoke":      { usage: "auth revoke <email>  (requires DB_ADMIN+)", destructive: true },
   "seal":             { usage: "seal <name> <password>" },
   "write":            { usage: "write <name> <payload>  (legacy raw heap write)" },
   "demo":             { usage: "demo <name>  (legacy loader demo)" },
