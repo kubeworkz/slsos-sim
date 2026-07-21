@@ -133,9 +133,7 @@ export default function SlsTerminal() {
           Command Line
         </h2>
         <p className="text-[11px] font-mono text-white/40 mt-3 leading-relaxed">
-          A client-side command router over the live HTTP API — no QEMU serial console needed. Covers most of{" "}
-          <code className="text-cyan-400">user/shell.c</code>'s command surface; a few commands with no HTTP route yet
-          are listed honestly in <code className="text-cyan-400">help</code> rather than silently failing.
+          A client-side command router over the live HTTP API.
         </p>
       </div>
 
