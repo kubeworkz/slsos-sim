@@ -110,6 +110,20 @@ export interface SlsSystemMetrics {
   diskCapacityBytes: number;
 }
 
+// Navigator-Parity Gap Roadmap Phase 3: one entry from the kernel's real
+// GET /api/security/audit feed (kernel/security_audit.c) -- auth failures,
+// role changes, and access denials the kernel itself recorded, not anything
+// simulated client-side. Field names mirror the JSON shape api_security_
+// audit_json() (net/http.c) emits directly.
+export interface KernelAuditEntry {
+  id: number;
+  tick: number;
+  uid: number;
+  action: string;
+  detail: string;
+  granted: boolean;
+}
+
 export interface SlsApiKey {
   id: string;
   name: string;

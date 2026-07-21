@@ -1,19 +1,30 @@
 import React, { useState } from "react";
-import { SlsObject, SlsUser, Permission, ObjectAcl, SlsObjectType } from "../types/sls";
-import { Shield, ShieldAlert, ShieldCheck, User, Settings, Check, X, Terminal, HelpCircle } from "lucide-react";
+import { SlsObject, SlsUser, Permission, ObjectAcl, SlsObjectType, KernelAuditEntry } from "../types/sls";
+import { Shield, ShieldAlert, ShieldCheck, User, Settings, Check, X, Terminal, HelpCircle, Database } from "lucide-react";
 
 interface SlsSecurityDashboardProps {
   objects: SlsObject[];
   onUpdateObjectAcl: (objectId: string, acl: ObjectAcl) => void;
   selectedUser: SlsUser;
   onSelectUser: (user: SlsUser) => void;
+  // Navigator-Parity Gap Roadmap Phase 3: the kernel's real GET /api/security/
+  // audit feed (auth failures, role changes, access denials it actually
+  // recorded), polled by App.tsx alongside everything else. Deliberately its
+  // own prop and its own panel below, not merged into `securityLogs` state --
+  // that state is this component's own honest, labeled "Interactive Privilege
+  // Simulation" (see the header below), and conflating simulated events with
+  // real kernel ones would make both harder to trust. Optional/defaulted to
+  // [] so this component still works standalone (e.g. in isolation tests)
+  // without a live kernel behind it.
+  realAuditLog?: KernelAuditEntry[];
 }
 
 export default function SlsSecurityDashboard({
   objects,
   onUpdateObjectAcl,
   selectedUser,
-  onSelectUser
+  onSelectUser,
+  realAuditLog = []
 }: SlsSecurityDashboardProps) {
   const [selectedObjectId, setSelectedObjectId] = useState<string>(objects[0]?.id || "");
   const [testAction, setTestAction] = useState<"read" | "write" | "execute">("read");
@@ -352,6 +363,65 @@ export default function SlsSecurityDashboard({
               )}
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* 4. LIVE KERNEL AUDIT TRAIL — Navigator-Parity Gap Roadmap Phase 3.
+          Real data from GET /api/security/audit, kept in its own panel (not
+          merged into the simulator's "Security Event Log" above) so what's
+          real and what's illustrative stay honestly distinguishable. */}
+      <div className="bg-[#0B0E14] p-8 border border-white/10 xl:col-span-3">
+        <div className="flex items-center justify-between border-b border-white/10 pb-4 mb-4">
+          <div>
+            <span className="font-mono text-[10px] tracking-widest text-cyan-400 uppercase">Real Kernel Backend</span>
+            <h3 className="text-2xl font-serif italic text-white mt-1 flex items-center gap-2">
+              <Database className="w-5 h-5 text-cyan-400" /> Live Kernel Audit Trail
+            </h3>
+          </div>
+          <span className="text-[9px] font-mono text-white/30 uppercase">
+            {realAuditLog.length} event{realAuditLog.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        <p className="text-white/50 text-xs font-light leading-relaxed mb-4">
+          Auth failures, role changes, and access denials the running kernel actually recorded
+          (<code className="text-cyan-400/80">kernel/security_audit.c</code>) — distinct from the
+          privilege simulator above, which is a labeled teaching tool operating on its own
+          in-memory model, not a feed from the kernel.
+        </p>
+        <div className="bg-[#0F1219] border border-white/10 max-h-56 overflow-y-auto scrollbar-thin">
+          <table className="w-full text-left text-[10px] font-mono text-white/70">
+            <thead className="sticky top-0 bg-[#0F1219]">
+              <tr className="border-b border-white/10 text-[9px] uppercase tracking-widest text-white/40">
+                <th className="p-2">#</th>
+                <th className="p-2">UID</th>
+                <th className="p-2">Action</th>
+                <th className="p-2">Detail</th>
+                <th className="p-2 text-right">Result</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {realAuditLog.length > 0 ? (
+                realAuditLog.map(entry => (
+                  <tr key={entry.id} className="hover:bg-white/5">
+                    <td className="p-2 text-white/30">{entry.id}</td>
+                    <td className="p-2">{entry.uid}</td>
+                    <td className="p-2 text-white">{entry.action}</td>
+                    <td className="p-2 text-white/60 truncate max-w-[240px]">{entry.detail}</td>
+                    <td className={`p-2 text-right font-semibold ${entry.granted ? "text-emerald-400" : "text-red-400"}`}>
+                      {entry.granted ? "OK" : "DENIED"}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={5} className="p-4 text-center text-white/20 italic">
+                    [ No kernel audit events yet -- try an invalid login, a role change, or an
+                    unauthorized object access ]
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

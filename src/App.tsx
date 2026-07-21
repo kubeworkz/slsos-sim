@@ -15,7 +15,8 @@ import {
   SlsSystemMetrics, 
   Transaction,
   SlsObjectType,
-  PortalUser
+  PortalUser,
+  KernelAuditEntry
 } from "./types/sls";
 import {
   INITIAL_SERVICES,
@@ -180,6 +181,14 @@ export default function App() {
   // values to compute a windowed CPU busy% for that ~5s interval. A ref
   // survives across poll() calls without needing to be a useCallback dep.
   const prevCpuTicksRef = useRef<{ idle: number; total: number } | null>(null);
+  // Navigator-Parity Gap Roadmap Phase 3: real kernel security audit trail
+  // (auth failures, role changes, access denials) from GET /api/security/
+  // audit -- distinct from SlsSecurityDashboard.tsx's own client-side
+  // simulated "Security Event Log", which stays exactly as it was (a
+  // labeled simulation, not a lie -- see that component's own header
+  // comment). This is the real feed that simulation couldn't previously
+  // read from, shown in its own clearly-labeled panel instead.
+  const [realAuditLog, setRealAuditLog] = useState<KernelAuditEntry[]>([]);
   const [activeTx, setActiveTx] = useState<Transaction | null>(null);
   const [activeUser, setActiveUser] = useState<SlsUser>(SlsUser.SYSTEM_KERNEL);
   const [systemState, setSystemState] = useState<"RUNNING" | "CRASHED" | "RECOVERING">("RUNNING");
@@ -448,13 +457,15 @@ export default function App() {
     };
 
     try {
-      const [healthRes, svcRes, walRes, tiersRes, objRes, metricsRes] = await Promise.all([
+      const [healthRes, svcRes, walRes, tiersRes, objRes, metricsRes, auditRes] = await Promise.all([
           authFetch("/api/health").then(r => r.json()).catch(() => null),
           authFetch("/api/services").then(r => r.json()).catch(() => null),
           authFetch("/api/wal").then(r => r.json()).catch(() => null),
           authFetch("/api/tiers").then(r => r.json()).catch(() => null),
           authFetch("/api/objects").then(r => r.json()).catch(() => null),
           authFetch("/api/metrics").then(r => r.json()).catch(() => null),
+          // Navigator-Parity Gap Roadmap Phase 3
+          authFetch("/api/security/audit").then(r => r.json()).catch(() => null),
         ]);
 
         // ── Uptime from kernel tick counter (~10 ms per tick) ─────────────────
@@ -523,6 +534,14 @@ export default function App() {
           if (ipcLatencyMs > 0) {
             setServices(prev => prev.map(s => ({ ...s, latencyMs: parseFloat(ipcLatencyMs.toFixed(3)) })));
           }
+        }
+
+        // ── Navigator-Parity Gap Roadmap Phase 3: real security audit log ─────
+        if (auditRes?.entries) {
+          // Kernel returns oldest-first (bump-allocated array); newest-first
+          // for display, capped to the most recent 50 so this doesn't grow
+          // unbounded in the browser tab across a long session.
+          setRealAuditLog([...auditRes.entries].reverse().slice(0, 50));
         }
 
         // ── Live microkernel services ─────────────────────────────────────────
@@ -1399,6 +1418,7 @@ export default function App() {
                 onUpdateObjectAcl={handleUpdatePermission}
                 selectedUser={activeUser}
                 onSelectUser={setActiveUser}
+                realAuditLog={realAuditLog}
               />
             )}
 
