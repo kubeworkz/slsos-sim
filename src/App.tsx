@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { 
   SlsObject, 
   MemoryPage, 
@@ -174,6 +174,12 @@ export default function App() {
   const [services, setServices] = useState<MicrokernelService[]>([]);
   const [walLogs, setWalLogs] = useState<WalLogEntry[]>([]);
   const [systemMetrics, setSystemMetrics] = useState<SlsSystemMetrics>(INITIAL_METRICS);
+  // Navigator-Parity Gap Roadmap Phase 2: previous poll's raw cumulative
+  // cpu_idle_ticks/cpu_total_ticks, kept in a ref (not React state) since it's
+  // never rendered directly -- only used to diff against the next poll's
+  // values to compute a windowed CPU busy% for that ~5s interval. A ref
+  // survives across poll() calls without needing to be a useCallback dep.
+  const prevCpuTicksRef = useRef<{ idle: number; total: number } | null>(null);
   const [activeTx, setActiveTx] = useState<Transaction | null>(null);
   const [activeUser, setActiveUser] = useState<SlsUser>(SlsUser.SYSTEM_KERNEL);
   const [systemState, setSystemState] = useState<"RUNNING" | "CRASHED" | "RECOVERING">("RUNNING");
@@ -476,11 +482,42 @@ export default function App() {
           const ipcLatencyMs = metricsRes.ipc_avg_latency_ns > 0
             ? metricsRes.ipc_avg_latency_ns / 1_000_000
             : 0;
+
+          // Navigator-Parity Gap Roadmap Phase 2: cpu_idle_ticks/cpu_total_ticks
+          // are cumulative counters straight from the kernel (net_event.c's
+          // cpu_idle_wait_count and kernel_tick_counter) -- per /api/metrics'
+          // own documented convention, this diffs the current poll against the
+          // previous one to get a windowed CPU busy% for the ~5s between them,
+          // rather than treating either raw counter as a percentage itself.
+          // Skipped on the very first poll (no previous sample to diff against)
+          // and defensively skipped if totalDelta isn't positive (clock/counter
+          // hasn't advanced, or the kernel restarted and counters reset lower).
+          let cpuBusyPercent: number | null = null;
+          if (metricsRes.cpu_idle_ticks != null && metricsRes.cpu_total_ticks != null) {
+            const idle = metricsRes.cpu_idle_ticks;
+            const total = metricsRes.cpu_total_ticks;
+            const prevTicks = prevCpuTicksRef.current;
+            if (prevTicks && total > prevTicks.total) {
+              const idleDelta = idle - prevTicks.idle;
+              const totalDelta = total - prevTicks.total;
+              // net_event_hlt_wait() can be called more than once per timer
+              // tick (any interrupt wakes it, not just the timer), so idleDelta
+              // isn't strictly bounded by totalDelta -- clamp to a sane 0-100
+              // range rather than let an approximation artifact show as e.g. 140%.
+              cpuBusyPercent = Math.max(0, Math.min(100, 100 * (1 - idleDelta / totalDelta)));
+            }
+            prevCpuTicksRef.current = { idle, total };
+          }
+
           setSystemMetrics(prev => ({
             ...prev,
             totalAccesses:    metricsRes.total_accesses   ?? prev.totalAccesses,
             pageFaultCount:   metricsRes.total_promotions ?? prev.pageFaultCount,
             compressionRatio: 1.0,   // kernel has no compression tier yet
+            cpuBusyPercent:      cpuBusyPercent ?? prev.cpuBusyPercent,
+            ramAllocatedFrames:  metricsRes.ram_allocated_frames ?? prev.ramAllocatedFrames,
+            ramTotalFrames:      metricsRes.ram_total_frames     ?? prev.ramTotalFrames,
+            diskCapacityBytes:   metricsRes.disk_capacity_bytes  ?? prev.diskCapacityBytes,
           }));
           // Propagate live IPC latency to all kernel services
           if (ipcLatencyMs > 0) {

@@ -96,6 +96,18 @@ export interface SlsSystemMetrics {
   l4ArchiveHits: number;
   compressionRatio: number; // e.g. 2.4 meaning 2.4:1 compression in archive tier
   uptimeSeconds: number;
+  // Navigator-Parity Gap Roadmap Phase 2: real kernel telemetry. cpuBusyPercent
+  // is already a computed windowed percentage (App.tsx diffs two consecutive
+  // /api/metrics polls' cpu_idle_ticks/cpu_total_ticks client-side, per that
+  // route's own "cumulative counter, diffed by caller" convention) -- the raw
+  // cumulative counters themselves aren't stored here since nothing else needs
+  // them. ramAllocatedFrames/ramTotalFrames and diskCapacityBytes are the raw
+  // values straight from the kernel (frame_pool.c's live bitmap popcount and
+  // nvme_admin.c's cached Identify Namespace capacity, respectively).
+  cpuBusyPercent: number;
+  ramAllocatedFrames: number;
+  ramTotalFrames: number;
+  diskCapacityBytes: number;
 }
 
 export interface SlsApiKey {

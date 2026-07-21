@@ -29,6 +29,26 @@ export default function SlsSystemHealth({ systemMetrics, onRefreshNow }: SlsSyst
   const pageFaultCount = systemMetrics.pageFaultCount;
   const uptimeSeconds = systemMetrics.uptimeSeconds;
 
+  // Navigator-Parity Gap Roadmap Phase 2: real CPU/RAM/disk figures, sourced
+  // from App.tsx's poll() via /api/metrics (net_event.c's idle-tick counter,
+  // frame_pool.c's live bitmap popcount, and nvme_admin.c's cached Identify
+  // Namespace capacity, respectively). cpuBusyPercent is already a computed
+  // windowed percentage by the time it reaches here (App.tsx diffs two
+  // consecutive polls); ramPercent is computed here since both raw frame
+  // counts are already exactly what's needed for a simple ratio.
+  const cpuBusyPercent = systemMetrics.cpuBusyPercent;
+  const ramAllocatedFrames = systemMetrics.ramAllocatedFrames;
+  const ramTotalFrames = systemMetrics.ramTotalFrames;
+  const ramPercent = ramTotalFrames > 0 ? (ramAllocatedFrames / ramTotalFrames) * 100 : 0;
+  const diskCapacityBytes = systemMetrics.diskCapacityBytes;
+  const formatBytes = (bytes: number): string => {
+    if (bytes <= 0) return "—";
+    const gb = bytes / (1024 * 1024 * 1024);
+    if (gb >= 1) return `${gb.toFixed(1)} GB`;
+    const mb = bytes / (1024 * 1024);
+    return `${mb.toFixed(0)} MB`;
+  };
+
   // Calculate page fault percentage of total accesses
   const pfRate = totalAccesses > 0 ? (pageFaultCount / totalAccesses) * 100 : 0;
 
@@ -187,6 +207,20 @@ export default function SlsSystemHealth({ systemMetrics, onRefreshNow }: SlsSyst
                 <div>
                   <span className="text-white/30 block">TOTAL FAULTS</span>
                   <span className="text-white font-medium">{pageFaultCount} faults</span>
+                </div>
+                <div>
+                  <span className="text-white/30 block">CPU BUSY</span>
+                  <span className="text-white font-medium">{cpuBusyPercent.toFixed(1)}%</span>
+                </div>
+                <div>
+                  <span className="text-white/30 block">RAM USED</span>
+                  <span className="text-white font-medium">
+                    {ramTotalFrames > 0 ? `${ramPercent.toFixed(1)}%` : "—"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-white/30 block">DISK CAPACITY</span>
+                  <span className="text-white font-medium">{formatBytes(diskCapacityBytes)}</span>
                 </div>
               </div>
 

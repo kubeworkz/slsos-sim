@@ -239,7 +239,14 @@ export const INITIAL_METRICS: SlsSystemMetrics = {
   l3SsdHits: 72,
   l4ArchiveHits: 18,
   compressionRatio: 2.8,
-  uptimeSeconds: 1250
+  uptimeSeconds: 1250,
+  // Navigator-Parity Gap Roadmap Phase 2: zeroed until the first live
+  // /api/metrics poll resolves (no meaningful placeholder value -- 0 reads
+  // honestly as "not yet known" rather than a fabricated baseline).
+  cpuBusyPercent: 0,
+  ramAllocatedFrames: 0,
+  ramTotalFrames: 0,
+  diskCapacityBytes: 0
 };
 
 // Seed 64 visual pages (8x8) representing a slice of the SLS flat workspace
