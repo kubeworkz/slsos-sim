@@ -232,7 +232,7 @@ function InsertPanel() {
   const [externalId, setExternalId]   = useState("");
   const [rawVector, setRawVector]     = useState("");
   const [prompt, setPrompt]           = useState("");
-  const [endpoint, setEndpoint]       = useState("127.0.0.1");
+  const [endpoint, setEndpoint]       = useState("10.0.2.2");
   const [port, setPort]               = useState("11434");
   const [model, setModel]             = useState("nomic-embed-text");
   const [busy, setBusy]               = useState(false);
@@ -282,7 +282,7 @@ function InsertPanel() {
         method: "POST", headers: authHeaders,
         body: JSON.stringify({
           collection, external_id: extId, prompt: prompt.trim(),
-          endpoint_ip: endpoint || "127.0.0.1", port: parseInt(port, 10) || 11434, model: model || "nomic-embed-text",
+          endpoint_ip: endpoint || "10.0.2.2", port: parseInt(port, 10) || 11434, model: model || "nomic-embed-text",
         }),
       });
       if (r?.ollama_status !== 0) flash(`✖ embedding failed (ollama_status=${r?.ollama_status}) — insert never attempted`);
@@ -398,13 +398,23 @@ function SearchPanel() {
   const [metric, setMetric]           = useState<"cosine" | "l2">("cosine");
   const [k, setK]                     = useState("10");
   const [ef, setEf]                   = useState("");
-  const [endpoint, setEndpoint]       = useState("127.0.0.1");
+  const [endpoint, setEndpoint]       = useState("10.0.2.2");
   const [port, setPort]               = useState("11434");
   const [model, setModel]             = useState("nomic-embed-text");
   const [busy, setBusy]               = useState(false);
   const [error, setError]             = useState("");
   const [matches, setMatches]         = useState<VecMatch[] | null>(null);
   const [truncated, setTruncated]     = useState(false);
+  // Search results are the one place a user can point at a specific vector
+  // (page_id/slot_index, the real VecId — see api_vec_delete's own comment
+  // in net/http.c on why deletion is keyed by that instead of external_id),
+  // so this is where the delete-a-vector control belongs. Keyed by
+  // "pageId:slotIndex" since that pair, not array index, is the row's real
+  // identity. Same ConfirmDeleteButton two-step pattern the Collections/
+  // Indexes panels already use, for one consistent destructive-action UX
+  // across this whole tab.
+  const [armedDeleteVec, setArmedDeleteVec] = useState<string | null>(null);
+  const [deleteVecMsg, setDeleteVecMsg] = useState("");
 
   const loadAll = useCallback(async () => {
     try {
@@ -441,7 +451,7 @@ function SearchPanel() {
         path = "/api/vec/embed-search";
         body = {
           collection, prompt: prompt.trim(), metric, k: parseInt(k, 10) || 10,
-          endpoint_ip: endpoint || "127.0.0.1", port: parseInt(port, 10) || 11434, model: model || "nomic-embed-text",
+          endpoint_ip: endpoint || "10.0.2.2", port: parseInt(port, 10) || 11434, model: model || "nomic-embed-text",
         };
       } else if (target === "index" && queryMode === "raw") {
         path = "/api/vec/index/search";
@@ -450,7 +460,7 @@ function SearchPanel() {
         path = "/api/vec/index/embed-search";
         body = {
           index: indexName, prompt: prompt.trim(), k: parseInt(k, 10) || 10, ef: parseInt(ef, 10) || undefined,
-          endpoint_ip: endpoint || "127.0.0.1", port: parseInt(port, 10) || 11434, model: model || "nomic-embed-text",
+          endpoint_ip: endpoint || "10.0.2.2", port: parseInt(port, 10) || 11434, model: model || "nomic-embed-text",
         };
       }
       const r = await kFetch(path, { method: "POST", headers: authHeaders, body: JSON.stringify(body) });
@@ -464,6 +474,27 @@ function SearchPanel() {
       }
     } catch (e: any) { setError(e?.message || "request failed"); }
     setBusy(false);
+  };
+
+  // A match's VecId is a physical address into some collection's storage
+  // regardless of whether it was found via brute-force (target==="collection")
+  // or an HNSW index (target==="index") -- an index is just an alternate
+  // path to the same underlying vecstore_delete(), so both cases resolve to
+  // the one backing collection name DELETE /api/vec/vector actually needs.
+  const deleteVectorCollection = (): string | undefined =>
+    target === "collection" ? collection : indexes.find(ix => ix.name === indexName)?.collection;
+
+  const handleDeleteVector = async (m: VecMatch) => {
+    const targetCollection = deleteVectorCollection();
+    if (!targetCollection) { setDeleteVecMsg("✖ delete failed — no backing collection resolved"); setArmedDeleteVec(null); return; }
+    const r = await kDelete("/api/vec/vector", { collection: targetCollection, page_id: m.page_id, slot_index: m.slot_index });
+    if (r?.ok === "true") {
+      setMatches(prev => (prev || []).filter(x => !(x.page_id === m.page_id && x.slot_index === m.slot_index)));
+      setDeleteVecMsg(`✔ deleted external_id=${m.external_id} (page_id=${m.page_id} slot_index=${m.slot_index})`);
+    } else {
+      setDeleteVecMsg(`✖ delete failed (status=${r?.status})`);
+    }
+    setArmedDeleteVec(null);
   };
 
   return (
@@ -584,6 +615,7 @@ function SearchPanel() {
             <div className="flex items-center gap-3">
               <span className="text-[9px] font-mono tracking-widest uppercase text-green-400">Results</span>
               <span className="text-[10px] font-mono text-white/30">{matches.length} match{matches.length === 1 ? "" : "es"}{truncated ? " (truncated)" : ""}</span>
+              {deleteVecMsg && <span className="text-[10px] font-mono text-white/50 ml-auto">{deleteVecMsg}</span>}
             </div>
             <table className="w-full text-[11px] font-mono border-collapse">
               <thead>
@@ -592,17 +624,30 @@ function SearchPanel() {
                   <th className="text-left px-3 py-2">Distance</th>
                   <th className="text-left px-3 py-2">Page ID</th>
                   <th className="text-left px-3 py-2">Slot Index</th>
+                  <th className="text-left px-3 py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {matches.map((m, i) => (
-                  <tr key={i} className="border-b border-white/5 hover:bg-white/3 transition-colors">
-                    <td className="px-3 py-2 text-white font-semibold">{m.external_id}</td>
-                    <td className="px-3 py-2 text-cyan-300">{formatDistance(m.distance)}</td>
-                    <td className="px-3 py-2 text-white/50">{m.page_id}</td>
-                    <td className="px-3 py-2 text-white/50">{m.slot_index}</td>
-                  </tr>
-                ))}
+                {matches.map((m, i) => {
+                  const key = `${m.page_id}:${m.slot_index}`;
+                  return (
+                    <tr key={i} className="border-b border-white/5 hover:bg-white/3 transition-colors">
+                      <td className="px-3 py-2 text-white font-semibold">{m.external_id}</td>
+                      <td className="px-3 py-2 text-cyan-300">{formatDistance(m.distance)}</td>
+                      <td className="px-3 py-2 text-white/50">{m.page_id}</td>
+                      <td className="px-3 py-2 text-white/50">{m.slot_index}</td>
+                      <td className="px-3 py-2">
+                        <ConfirmDeleteButton
+                          armed={armedDeleteVec === key}
+                          onArm={() => setArmedDeleteVec(key)}
+                          onConfirm={() => handleDeleteVector(m)}
+                          onCancel={() => setArmedDeleteVec(null)}
+                          label={`vector external_id=${m.external_id}`}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </>
