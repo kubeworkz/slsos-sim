@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { SlsObject, MemoryPage, StorageTier, SlsObjectType, SlsUser, SlsSystemMetrics } from "../types/sls";
-import { Cpu, HardDrive, Layers, Database, ArrowDown, ArrowUp, RefreshCw, AlertTriangle, CpuIcon, Check } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
+import { Cpu, HardDrive, Layers, Database, ArrowDown, ArrowUp, RefreshCw, AlertTriangle, CpuIcon } from "lucide-react";
 import SlsStorageThroughput from "./SlsStorageThroughput";
 import SlsTierConfigPanel from "./SlsTierConfigPanel";
 
@@ -38,45 +37,6 @@ export default function SlsMemoryMap({
   const [dereferencedData, setDereferencedData] = useState<any | null>(null);
   const [accessLog, setAccessLog] = useState<{ address: string; status: string; latency: number; fault: boolean }[]>([]);
   const [isMigrating, setIsMigrating] = useState(false);
-
-  const [swapState, setSwapState] = useState<{
-    address: string;
-    objectName: string;
-    step: "idle" | "fault" | "fetch" | "decompress" | "write" | "done";
-  }>({
-    address: "",
-    objectName: "",
-    step: "idle"
-  });
-
-  useEffect(() => {
-    if (swapState.step === "idle") return;
-
-    let timer: any;
-    if (swapState.step === "fault") {
-      timer = setTimeout(() => {
-        setSwapState(prev => ({ ...prev, step: "fetch" }));
-      }, 1000);
-    } else if (swapState.step === "fetch") {
-      timer = setTimeout(() => {
-        setSwapState(prev => ({ ...prev, step: "decompress" }));
-      }, 1200);
-    } else if (swapState.step === "decompress") {
-      timer = setTimeout(() => {
-        setSwapState(prev => ({ ...prev, step: "write" }));
-      }, 1200);
-    } else if (swapState.step === "write") {
-      timer = setTimeout(() => {
-        setSwapState(prev => ({ ...prev, step: "done" }));
-      }, 1000);
-    } else if (swapState.step === "done") {
-      timer = setTimeout(() => {
-        setSwapState(prev => ({ ...prev, step: "idle" }));
-      }, 1200);
-    }
-
-    return () => clearTimeout(timer);
-  }, [swapState.step]);
 
   const getTierColor = (tier: StorageTier) => {
     switch (tier) {
@@ -115,16 +75,12 @@ export default function SlsMemoryMap({
     
     let statusText = "Cache Hit";
     if (result.pageFault) {
-      statusText = "PAGE FAULT - Swapping from Disk";
-      
-      if (selectedPage.tier === StorageTier.L4_ARCHIVE) {
-        // Trigger L4 Page Fault Swap Animation
-        setSwapState({
-          address: selectedPage.address,
-          objectName: selectedPage.objectName || "System Block",
-          step: "fault"
-        });
-      }
+      // Cold/archived data — slower to retrieve, and gets promoted back to
+      // L2_DRAM shortly after (see App.tsx's handleAccessAddress). Previously
+      // this triggered a full-screen animated "PAGE FAULT" overlay; dropped
+      // since it read as an actual error to users rather than normal cold
+      // storage access.
+      statusText = "Cold Archive Access - Restoring to DRAM";
     } else if (selectedPage.objectId) {
       statusText = `Direct Memory Translation Success`;
     } else {
@@ -277,195 +233,15 @@ export default function SlsMemoryMap({
               );
             })}
 
-            {/* Visual Overlay for Page Swap Process */}
-            <AnimatePresence>
-              {swapState.step !== "idle" && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.3 }}
-                  className="absolute inset-0 z-20 bg-[#0B0E14]/95 flex flex-col items-center justify-center p-6 text-center backdrop-blur-sm"
-                >
-                  {/* Outer glowing frame based on step */}
-                  <div className={`absolute inset-0 border-2 pointer-events-none transition-colors duration-500 ${
-                    swapState.step === "fault" ? "border-red-500 shadow-[inset_0_0_20px_rgba(239,68,68,0.3)] animate-pulse" :
-                    swapState.step === "fetch" ? "border-fuchsia-500 shadow-[inset_0_0_20px_rgba(192,38,211,0.2)]" :
-                    swapState.step === "decompress" ? "border-amber-500 shadow-[inset_0_0_20px_rgba(245,158,11,0.2)]" :
-                    swapState.step === "write" ? "border-indigo-500 shadow-[inset_0_0_20px_rgba(99,102,241,0.2)]" :
-                    "border-emerald-500 shadow-[inset_0_0_20px_rgba(16,185,129,0.3)]"
-                  }`} />
-
-                  {/* Step Content */}
-                  {swapState.step === "fault" && (
-                    <motion.div
-                      key="fault"
-                      initial={{ scale: 0.9, opacity: 0 }}
-                      animate={{ scale: 1, opacity: 1 }}
-                      exit={{ scale: 0.95, opacity: 0 }}
-                      className="space-y-4 max-w-md"
-                    >
-                      <div className="relative mx-auto w-16 h-16 flex items-center justify-center">
-                        <motion.div 
-                          animate={{ scale: [1, 1.25, 1] }} 
-                          transition={{ repeat: Infinity, duration: 0.8 }}
-                          className="absolute inset-0 bg-red-500/20 rounded-full" 
-                        />
-                        <AlertTriangle className="w-10 h-10 text-red-500 relative z-10" />
-                      </div>
-                      <div className="space-y-1">
-                        <span className="font-mono text-[9px] tracking-widest text-red-500 uppercase font-bold animate-pulse">Hardware Interrupt 0x0E</span>
-                        <h4 className="text-lg font-serif italic text-white uppercase tracking-wide">CPU Page Fault Detected</h4>
-                      </div>
-                      <p className="text-[11px] text-white/60 leading-relaxed font-light">
-                        Virtual descriptor points to a compressed block inside cold offline archival storage. Stalling instruction pipeline.
-                      </p>
-                      <div className="bg-red-950/30 border border-red-500/20 p-2 text-[10px] font-mono text-red-400">
-                        ADDR: {swapState.address} | OBJ: {swapState.objectName}
-                      </div>
-                    </motion.div>
-                  )}
-
-                  {swapState.step === "fetch" && (
-                    <motion.div
-                      key="fetch"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                      className="space-y-4 w-full max-w-md"
-                    >
-                      {/* Interactive Schema: L4 -> RAM */}
-                      <div className="flex items-center justify-around bg-[#0F1219] p-4 border border-white/5 relative rounded-none">
-                        <div className="flex flex-col items-center">
-                          <Database className="w-8 h-8 text-fuchsia-500 animate-pulse" />
-                          <span className="font-mono text-[9px] text-fuchsia-400 mt-1">L4 ARCHIVE</span>
-                        </div>
-                        
-                        <div className="flex-1 px-4 relative flex items-center justify-center">
-                          {/* Animated flow dots */}
-                          <div className="w-full h-0.5 bg-white/10 relative overflow-hidden">
-                            <motion.div 
-                              animate={{ x: [-100, 200] }}
-                              transition={{ repeat: Infinity, duration: 1.2, ease: "linear" }}
-                              className="absolute top-0 bottom-0 w-12 bg-gradient-to-r from-transparent via-fuchsia-400 to-transparent"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="flex flex-col items-center">
-                          <Layers className="w-8 h-8 text-indigo-400 animate-pulse" />
-                          <span className="font-mono text-[9px] text-indigo-300 mt-1">SWAP BUFFER</span>
-                        </div>
-                      </div>
-
-                      <div className="space-y-1">
-                        <span className="font-mono text-[9px] tracking-widest text-fuchsia-400 uppercase font-semibold">Step 1 of 3: Sector Fetch</span>
-                        <h4 className="text-lg font-serif italic text-white">Retrieving Archival Blocks</h4>
-                      </div>
-                      <p className="text-[11px] text-white/60 leading-relaxed font-light">
-                        Reading compressed sectors from L4 block storage into the kernel memory buffer area.
-                      </p>
-                    </motion.div>
-                  )}
-
-                  {swapState.step === "decompress" && (
-                    <motion.div
-                      key="decompress"
-                      initial={{ opacity: 0, scale: 0.95 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      className="space-y-4 max-w-md"
-                    >
-                      <div className="relative mx-auto w-14 h-14 flex items-center justify-center">
-                        <motion.div 
-                          animate={{ rotate: 360 }}
-                          transition={{ repeat: Infinity, duration: 2, ease: "linear" }}
-                        >
-                          <RefreshCw className="w-10 h-10 text-amber-400" />
-                        </motion.div>
-                      </div>
-
-                      <div className="space-y-1">
-                        <span className="font-mono text-[9px] tracking-widest text-amber-400 uppercase font-semibold">Step 2 of 3: Decompressing</span>
-                        <h4 className="text-lg font-serif italic text-white">LZX Pipeline Decompression</h4>
-                      </div>
-                      <p className="text-[11px] text-white/60 leading-relaxed font-light">
-                        Rebuilding the raw 4KB page structure from compressed format. Restoring uncompressed memory descriptors.
-                      </p>
-                      <div className="flex justify-center gap-4 text-[10px] font-mono text-amber-400/80 uppercase">
-                        <span>Ratio: 4.2:1</span>
-                        <span>•</span>
-                        <span>Size: 4,096 Bytes</span>
-                      </div>
-                    </motion.div>
-                  )}
-
-                  {swapState.step === "write" && (
-                    <motion.div
-                      key="write"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="space-y-4 w-full max-w-md"
-                    >
-                      {/* Physical RAM Write schematic */}
-                      <div className="flex items-center justify-around bg-[#0F1219] p-4 border border-white/5">
-                        <div className="flex flex-col items-center opacity-40">
-                          <Database className="w-8 h-8 text-fuchsia-500" />
-                          <span className="font-mono text-[9px] text-fuchsia-400 mt-1">L4 ARCHIVE</span>
-                        </div>
-                        
-                        <div className="flex-1 px-4 relative flex items-center justify-center">
-                          <div className="w-full h-0.5 bg-white/10 relative overflow-hidden">
-                            <motion.div 
-                              animate={{ x: [-100, 200] }}
-                              transition={{ repeat: Infinity, duration: 1.2, ease: "linear" }}
-                              className="absolute top-0 bottom-0 w-12 bg-gradient-to-r from-transparent via-indigo-400 to-transparent"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="flex flex-col items-center">
-                          <Cpu className="w-8 h-8 text-indigo-500 animate-pulse" />
-                          <span className="font-mono text-[9px] text-indigo-400 mt-1">L2 DRAM RAM</span>
-                        </div>
-                      </div>
-
-                      <div className="space-y-1">
-                        <span className="font-mono text-[9px] tracking-widest text-indigo-400 uppercase font-semibold">Step 3 of 3: Physical Swap</span>
-                        <h4 className="text-lg font-serif italic text-white">Writing cache lines to DRAM</h4>
-                      </div>
-                      <p className="text-[11px] text-white/60 leading-relaxed font-light">
-                        Allocating a free L2 DRAM physical sector and mapping the virtual translation table pointer registers.
-                      </p>
-                    </motion.div>
-                  )}
-
-                  {swapState.step === "done" && (
-                    <motion.div
-                      key="done"
-                      initial={{ scale: 0.9, opacity: 0 }}
-                      animate={{ scale: 1, opacity: 1 }}
-                      exit={{ scale: 1.05, opacity: 0 }}
-                      className="space-y-4 max-w-md"
-                    >
-                      <div className="relative mx-auto w-16 h-16 bg-emerald-500/10 rounded-full flex items-center justify-center border border-emerald-500/30">
-                        <Check className="w-8 h-8 text-emerald-400" />
-                      </div>
-
-                      <div className="space-y-1">
-                        <span className="font-mono text-[9px] tracking-widest text-emerald-400 uppercase font-semibold animate-pulse">Interrupt Cleared</span>
-                        <h4 className="text-lg font-serif italic text-white">Translation Parity Complete</h4>
-                      </div>
-                      <p className="text-[11px] text-white/60 leading-relaxed font-light">
-                        Page successfully swapped back to L2 DRAM. The CPU can now execute immediate direct-pointer dereferencing.
-                      </p>
-                      <div className="bg-emerald-950/30 border border-emerald-500/20 p-2 text-[10px] font-mono text-emerald-400">
-                        LATENCY STALL RESOLVED: ~12.50ms ➔ 0.10ms
-                      </div>
-                    </motion.div>
-                  )}
-                </motion.div>
-              )}
-            </AnimatePresence>
+            {/* Previously rendered a full-screen animated "CRITICAL L4 PAGE
+                FAULT" swap sequence (fault -> fetch -> decompress -> write
+                -> done) with a red flash overlay below when dereferencing an
+                archived object. Removed: it read as an actual system error
+                to users rather than normal cold-archive access. Cold-tier
+                access is now just a "Cold Archive Access" log entry (see
+                handleDereference above) plus the same quiet automatic
+                promotion L2/L3 hits already get (see App.tsx's
+                handleAccessAddress). */}
           </div>
         </div>
 
@@ -501,36 +277,6 @@ export default function SlsMemoryMap({
           </div>
         </div>
 
-        {/* Visual red flash overlay triggering on L4 cold storage page fault */}
-        <AnimatePresence>
-          {swapState.step === "fault" && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ 
-                opacity: [0, 0.95, 0.15, 0.85, 0.05, 0.6, 0.02, 0.4, 0],
-                backgroundColor: [
-                  "rgba(239, 68, 68, 0)", 
-                  "rgba(239, 68, 68, 0.65)", 
-                  "rgba(239, 68, 68, 0.15)", 
-                  "rgba(239, 68, 68, 0.55)", 
-                  "rgba(239, 68, 68, 0.05)", 
-                  "rgba(239, 68, 68, 0.4)", 
-                  "rgba(239, 68, 68, 0.02)", 
-                  "rgba(239, 68, 68, 0.25)", 
-                  "rgba(239, 68, 68, 0)"
-                ]
-              }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 1.2, ease: "easeInOut" }}
-              className="absolute inset-0 pointer-events-none z-30 border-2 border-red-500/60 shadow-[inset_0_0_60px_rgba(239,68,68,0.65)] flex items-center justify-center mix-blend-screen"
-            >
-              <div className="absolute inset-0 bg-gradient-to-t from-red-600/10 via-transparent to-red-600/10 animate-pulse pointer-events-none" />
-              <div className="font-mono text-[10px] tracking-[0.2em] font-black uppercase text-red-400 bg-red-950/90 border border-red-500/40 px-4 py-2 shadow-2xl animate-bounce select-none">
-                CRITICAL L4 PAGE FAULT // SWAPPING FROM COLD SECTOR
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
 
       {/* RIGHT PANEL: INTERACTIVE SEGMENT DEREFERENCER & TIER MANAGER */}
