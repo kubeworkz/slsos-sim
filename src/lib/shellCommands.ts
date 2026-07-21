@@ -142,6 +142,27 @@ async function postJSON(path: string, body: Record<string, any>): Promise<any> {
   return data;
 }
 
+// VectorStore Interface Roadmap Phase 1 -- the first real HTTP DELETE
+// routes this backend has ever had (every prior destructive action in
+// this file, e.g. "index drop"/"mqt drop"/"partition destroy", goes
+// through postJSON() against a "/drop" or "/destroy"-suffixed POST route
+// instead). Real DELETE was the deliberate choice for the three new
+// /api/vec/* routes -- see docs/AeroSLS-VectorStore-Interface-Roadmap-v0.1.md
+// Phase 1 for the full rationale -- so this mirrors postJSON()'s exact
+// shape with the one method difference rather than routing vec deletes
+// through a "/drop" POST path to match the older idiom.
+async function deleteJSON(path: string, body: Record<string, any>): Promise<any> {
+  const r = await authFetch(path, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data: any = {};
+  try { data = await r.json(); } catch { /* non-JSON or empty body */ }
+  if (!r.ok && data?.error === undefined) return { ok: "false", error: `HTTP ${r.status}` };
+  return data;
+}
+
 const isOk = (data: any) => data?.ok === "true";
 const errOf = (data: any): string | null =>
   typeof data?.error === "string" ? data.error : (data?.ok === "false" ? "request failed" : null);
@@ -697,6 +718,37 @@ register({
   },
 });
 register({
+  name: "vec search-text",
+  usage: "vec search-text <collection> [endpoint=] [port=] [model=] [metric=cosine|l2] [k=10] prompt=<query text>",
+  handler: async (rest) => {
+    // Same prompt= marker convention as "vec embed-insert" above, not the
+    // bare-trailing-text shape "agent run" uses -- a free-text query can
+    // itself contain "=" (e.g. "revenue = cost + margin"), which splitKV()
+    // would otherwise misparse as a stray kv token. Consistency with the
+    // one other command in this file that already takes free-form text
+    // alongside kv flags, for the same real reason that command adopted it.
+    const promptIdx = rest.search(/\bprompt=/);
+    let head = rest, prompt = "";
+    if (promptIdx >= 0) { head = rest.slice(0, promptIdx); prompt = rest.slice(promptIdx + "prompt=".length); }
+    const { pos, kv } = splitKV(head);
+    const [collection] = pos;
+    if (!collection || !prompt.trim()) return err("usage: vec search-text <collection> [endpoint=] [port=] [model=] [metric=] [k=] prompt=<text>");
+    const d = await postJSON("/api/vec/embed-search", {
+      collection, prompt: prompt.trim(),
+      endpoint_ip: kv.endpoint || "127.0.0.1", port: kv.port ? parseInt(kv.port, 10) : 11434, model: kv.model || "nomic-embed-text",
+      metric: kv.metric || "cosine", k: kv.k ? parseInt(kv.k, 10) : 10,
+    });
+    // ok:"false" here means the embed step itself failed (ollama_status !=
+    // 0) -- the syscall adapter never attempts the search in that case, same
+    // "distinguish denial from absence" posture "vec embed-insert" already
+    // established for its own two-stage ollama_status/insert_status split.
+    if (errOf(d)) return err(`${errOf(d)} (ollama_status=${d.ollama_status})`);
+    let text = fmtTable(d.matches, ["external_id", "page_id", "slot_index", "distance"]);
+    if (d.truncated) text += "\n(truncated)";
+    return { text };
+  },
+});
+register({
   name: "vec join", usage: "vec join <table> <id_column> <matches JSON array>  (advanced — pass the 'matches' array a prior 'vec search' printed, as JSON)",
   handler: async (rest) => {
     const bracket = rest.indexOf("[");
@@ -742,6 +794,78 @@ register({
     let text = fmtTable(d.matches, ["external_id", "page_id", "slot_index", "distance"]);
     if (d.truncated) text += "\n(truncated)";
     return { text };
+  },
+});
+register({
+  name: "vec index search-text",
+  usage: "vec index search-text <index> [endpoint=] [port=] [model=] [k=10] [ef=] prompt=<query text>",
+  handler: async (rest) => {
+    // Same prompt= marker convention as "vec search-text" above -- see that
+    // command's own comment for why (a free-text query can contain "=").
+    // No metric= kv here, matching "vec index search"'s own body shape --
+    // an HNSW index's metric is fixed at creation time, not chosen per query.
+    const promptIdx = rest.search(/\bprompt=/);
+    let head = rest, prompt = "";
+    if (promptIdx >= 0) { head = rest.slice(0, promptIdx); prompt = rest.slice(promptIdx + "prompt=".length); }
+    const { pos, kv } = splitKV(head);
+    const [index] = pos;
+    if (!index || !prompt.trim()) return err("usage: vec index search-text <index> [endpoint=] [port=] [model=] [k=] [ef=] prompt=<text>");
+    const k = kv.k ? parseInt(kv.k, 10) : 10;
+    const d = await postJSON("/api/vec/index/embed-search", {
+      index, prompt: prompt.trim(),
+      endpoint_ip: kv.endpoint || "127.0.0.1", port: kv.port ? parseInt(kv.port, 10) : 11434, model: kv.model || "nomic-embed-text",
+      k, ef: kv.ef ? parseInt(kv.ef, 10) : k,
+    });
+    if (errOf(d)) return err(`${errOf(d)} (ollama_status=${d.ollama_status})`);
+    let text = fmtTable(d.matches, ["external_id", "page_id", "slot_index", "distance"]);
+    if (d.truncated) text += "\n(truncated)";
+    return { text };
+  },
+});
+register({
+  // Not marked destructive -- matches "index rebuild"'s own (row-store
+  // B-tree) precedent exactly, which this command's name deliberately
+  // mirrors for the same operation on the vector side. Clears and
+  // repopulates an index's contents from its live collection, but never
+  // touches the collection itself or drops the index -- a repair/refresh
+  // action, not a data-loss risk the way "vec index drop" is.
+  name: "vec index rebuild", usage: "vec index rebuild <name>",
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: vec index rebuild <name>");
+    const d = await postJSON("/api/vec/index/rebuild", { index: name });
+    if (!isOk(d)) return err(errOf(d) || "vec index rebuild failed");
+    return ok(`vector index '${name}' rebuilt`);
+  },
+});
+register({
+  name: "vec delete", usage: "vec delete <collection> <page_id> <slot_index>", destructive: true,
+  handler: async (rest) => {
+    const [collection, pageId, slotIndex] = words(rest);
+    if (!collection || !pageId || !slotIndex) return err("usage: vec delete <collection> <page_id> <slot_index>  (page_id/slot_index come from a prior 'vec insert' or 'vec search' result, not external_id)");
+    const d = await deleteJSON("/api/vec/vector", { collection, page_id: parseInt(pageId, 10), slot_index: parseInt(slotIndex, 10) });
+    if (!isOk(d)) return err(errOf(d) || "vec delete failed");
+    return ok(`vector deleted from '${collection}' (page_id=${pageId}, slot_index=${slotIndex})`);
+  },
+});
+register({
+  name: "vec collection drop", usage: "vec collection drop <name>", destructive: true,
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: vec collection drop <name>");
+    const d = await deleteJSON("/api/vec/collections", { name });
+    if (!isOk(d)) return err(errOf(d) || "vec collection drop failed");
+    return ok(`collection '${name}' dropped`);
+  },
+});
+register({
+  name: "vec index drop", usage: "vec index drop <name>", destructive: true,
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: vec index drop <name>");
+    const d = await deleteJSON("/api/vec/indexes", { name });
+    if (!isOk(d)) return err(errOf(d) || "vec index drop failed");
+    return ok(`vector index '${name}' dropped`);
   },
 });
 

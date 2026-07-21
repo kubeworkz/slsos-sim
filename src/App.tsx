@@ -46,14 +46,15 @@ import SlsDbEngine from "./components/SlsDbEngine";
 import SlsAgentManager from "./components/SlsAgentManager";
 import SlsWorkflowBuilder from "./components/SlsWorkflowBuilder";
 import SlsTerminal from "./components/SlsTerminal";
+import SlsVectorStore from "./components/SlsVectorStore";
 
-import { 
-  Layers, 
-  ShieldCheck, 
-  Database, 
-  Cpu, 
-  Sparkles, 
-  RefreshCw, 
+import {
+  Layers,
+  ShieldCheck,
+  Database,
+  Cpu,
+  Sparkles,
+  RefreshCw,
   AlertTriangle,
   Play,
   CheckCircle,
@@ -64,7 +65,8 @@ import {
   LogOut,
   Bot,
   GitBranch,
-  TerminalSquare
+  TerminalSquare,
+  Boxes
 } from "lucide-react";
 
 const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
@@ -152,7 +154,7 @@ const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
 
 export default function App() {
   // Navigation tabs — start on "memory" if already logged in, else "portal"
-  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "coprocessor" | "dbengine" | "portal" | "agents" | "workflows" | "terminal">(() => {
+  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "coprocessor" | "dbengine" | "vectorstore" | "portal" | "agents" | "workflows" | "terminal">(() => {
     const saved = localStorage.getItem("sls_current_portal_user");
     return saved ? "memory" : "portal";
   });
@@ -1265,8 +1267,9 @@ export default function App() {
               {
                 label: "Database",
                 items: [
-                  { key: "dbengine", label: "DB Engine", icon: <Database        className="w-3.5 h-3.5" /> },
-                  { key: "terminal", label: "Terminal",  icon: <TerminalSquare  className="w-3.5 h-3.5" /> },
+                  { key: "dbengine",    label: "DB Engine",     icon: <Database       className="w-3.5 h-3.5" /> },
+                  { key: "vectorstore", label: "Vector Store",  icon: <Boxes          className="w-3.5 h-3.5" /> },
+                  { key: "terminal",    label: "Terminal",      icon: <TerminalSquare className="w-3.5 h-3.5" /> },
                 ],
               },
               {
@@ -1394,6 +1397,10 @@ export default function App() {
                 objects={objects}
                 activeUser={activeUser}
               />
+            )}
+
+            {activeTab === "vectorstore" && (
+              <SlsVectorStore />
             )}
 
             {activeTab === "terminal" && (
