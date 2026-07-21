@@ -36,73 +36,21 @@ interface CommandSpec {
   handler: CommandHandler;
 }
 
-// Commands with no dedicated structured HTTP route (docs/AeroSLS-Web-
-// Terminal-Plan-v0.1.md §3's original "Missing" list, corrected twice now:
-// first during Task 1, when journal dump/index scan/mqt scan/agent status
-// turned out to already have routes and moved to the real registry below,
-// and vfree turned out to have NO route despite being listed as available
-// in the plan's first draft; second after the Kernel-Side Shell Refactor
-// (§10) shipped POST /api/shell/exec, which runs user/shell.c's *entire*
-// dispatch chain -- every one of these is a real shell.c command, so all
-// of them are reachable now, just through the legacy shell dispatch
-// instead of a purpose-built route with structured JSON output like the
-// COMMANDS registry above. Kept as a separate table (not merged into
-// COMMANDS) because that distinction is real and worth surfacing to the
-// user, not because these don't work.
-//
-// Usage strings below are the ACTUAL user/shell.c argument shapes (verified
-// against a full read of shell.c, not the shell's own command names guessed
-// at) -- they're no longer just inert documentation once §10 shipped, since
-// runFallbackCommand() sends the raw typed line straight to the kernel's
-// real parser, which will reject anything that doesn't match. A few were
-// wrong in the original draft, written before that mattered: "auth create"
-// takes <email> <uid> <role>, not just <name>; "login" is a session
-// uid/gid switch, not username/password; "demo"/"upload" take a leading
-// <name> the old usage strings omitted; "ipc post" takes a hex opcode, not
-// free-text; "webapp set"/"webapp append" take a leading <obj>; "seal" was
-// fixed to its new post-refactor <name> <password> single-line form
-// (§10.1); and "delete object" was removed outright -- it was never a real
-// shell.c command, just an invented alias for vfree that would have always
-// failed with "Unknown command" once actually sent to the kernel.
-//
-// Architectural Phase 4 (docs/AeroSLS-Architectural-MVP-Roadmap-v0.1.md):
-// "auth create" now takes a trailing <password> too (previously an account
-// with no password could later have its live token handed to anyone who
-// just knew its email via POST /auth/token) and, along with "auth revoke",
-// now requires the caller to already be DB_ADMIN or higher -- a privilege-
-// escalation gap (any session could mint itself a DB_ADMIN account) found
-// and closed in the same pass. Both marked destructive here to match: they
-// mutate real account/credential state, same bar as role set/grant/revoke/chmod.
-const SHELL_FALLBACK_COMMANDS: Record<string, { usage: string; destructive?: boolean }> = {
-  "login":            { usage: "login <uid> <gid>" },
-  "role set":         { usage: "role set <uid> <SYSTEM_KERNEL|DB_ADMIN|APP_USER|GUEST>", destructive: true },
-  "grant":            { usage: "grant <uid> <object> <perm>", destructive: true },
-  "revoke":           { usage: "revoke <uid> <object> <perm>", destructive: true },
-  "chmod":            { usage: "chmod <name> <mask_hex>", destructive: true },
-  "auth create":      { usage: "auth create <email> <uid> <SYSTEM_KERNEL|DB_ADMIN|APP_USER|GUEST> <password> (requires DB_ADMIN+)", destructive: true },
-  "auth list":        { usage: "auth list" },
-  "auth revoke":      { usage: "auth revoke <email>  (requires DB_ADMIN+)", destructive: true },
-  "seal":             { usage: "seal <name> <password>" },
-  "write":            { usage: "write <name> <payload>  (legacy raw heap write)" },
-  "demo":             { usage: "demo <name>  (legacy loader demo)" },
-  "load":             { usage: "load <name>  (legacy loader)" },
-  "loader list":      { usage: "loader list  (legacy loader)" },
-  "upload":           { usage: "upload <name> <hex>  (legacy loader upload -- see 'program upload'/'stream upload')" },
-  "svc crash":        { usage: "svc crash <name>", destructive: true },
-  "svc restart":      { usage: "svc restart <name>", destructive: true },
-  "proc kill":        { usage: "proc kill <pid>", destructive: true },
-  "ipc post":         { usage: "ipc post <svc_name> <opcode_hex>" },
-  "ipc stat":         { usage: "ipc stat" },
-  "journal create":   { usage: "journal create <name>" },
-  "journal purge":    { usage: "journal purge <name>", destructive: true },
-  "tier demote":      { usage: "tier demote <name>" },
-  "tier promote":     { usage: "tier promote <name>" },
-  "vfree":            { usage: "vfree <name>", destructive: true },
-  "workflow addstep": { usage: "workflow addstep <workflow> <agent> <in> <out>" },
-  "webapp set":       { usage: "webapp set <obj> <path> <content>" },
-  "webapp list":      { usage: "webapp list [<obj>]" },
-  "webapp append":    { usage: "webapp append <obj> <path> <content>" },
-};
+// Shell-Command JSON-Promotion Roadmap: this file used to carry a second
+// table here (SHELL_FALLBACK_COMMANDS) listing the 28 real user/shell.c
+// commands that had no purpose-built HTTP route and were only reachable
+// through POST /api/shell/exec's plain-text legacy dispatch. All 28 --
+// including the legacy loader group (write/demo/load/loader list/upload)
+// and "login" -- now have real JSON routes in net/http.c and are
+// registered below like every other command, so that table and the
+// execViaShellFallback() plumbing it fed are gone. One command's shape
+// changed in the process: "login" was a session uid/gid switch in
+// shell.c, but net/http.c's HTTP session always reseeds identity from the
+// bearer token on every request (Architectural Phase 4), making that
+// switch a no-op over HTTP even under the old fallback path. It's
+// promoted here as a read-only "login" -> GET /api/session/whoami instead
+// of a fake state-mutating impersonation route, which would just reopen
+// the privilege-escalation gap that phase closed.
 
 const COMMANDS: CommandSpec[] = [];
 // First-word index for "did you mean" suggestions when a category prefix
@@ -113,10 +61,6 @@ function register(spec: CommandSpec) {
   COMMANDS.push(spec);
   const first = spec.name.split(" ")[0];
   (byFirstWord[first] ||= []).push(spec.name);
-}
-for (const name of Object.keys(SHELL_FALLBACK_COMMANDS)) {
-  const first = name.split(" ")[0];
-  (byFirstWord[first] ||= []).push(name);
 }
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
@@ -166,31 +110,6 @@ async function deleteJSON(path: string, body: Record<string, any>): Promise<any>
 const isOk = (data: any) => data?.ok === "true";
 const errOf = (data: any): string | null =>
   typeof data?.error === "string" ? data.error : (data?.ok === "false" ? "request failed" : null);
-
-// Kernel-Side Shell Refactor follow-on (docs/AeroSLS-Web-Terminal-Plan-
-// v0.1.md §10.6): every command in SHELL_FALLBACK_COMMANDS is a real
-// user/shell.c command with no purpose-built HTTP route of its own, now
-// reachable through POST /api/shell/exec, which runs the command string
-// through shell.c's *entire* dispatch chain and returns whatever the
-// serial console would have printed. `ok` on that response means "the
-// kernel recognized the command," not "the operation succeeded" -- most
-// shell.c commands only communicate real success/failure through their
-// own printed text, exactly as a human reading the serial console always
-// has. This function doesn't try to parse or reformat that text (there's
-// no structured shape to parse -- it's whatever kernel_serial_print calls
-// that command happened to make) -- it's shown to the user verbatim,
-// same as every other command's output.
-async function execViaShellFallback(commandLine: string): Promise<CommandResult> {
-  const data = await postJSON("/api/shell/exec", { command: commandLine });
-  if (typeof data?.output !== "string") {
-    return err(errOf(data) || "request failed");
-  }
-  const text = data.output.length ? data.output.replace(/\n+$/, "") : "(no output)";
-  // ok:false here means "kernel didn't recognize this command line" (a
-  // syntax mismatch against shell.c's exact parser, not a network error) --
-  // still worth flagging as an error rather than printing silently.
-  return { text, isError: !isOk(data) };
-}
 
 // ─── Output formatting ───────────────────────────────────────────────────────
 function cellStr(v: any): string {
@@ -1172,21 +1091,310 @@ register({
   },
 });
 
+// ─── Shell-Command JSON-Promotion Roadmap: formerly-legacy commands ─────────────
+// All 28 of these used to be SHELL_FALLBACK_COMMANDS entries with no
+// dedicated route, reachable only via the kernel's plain-text POST
+// /api/shell/exec dispatch. Field names below were read directly out of
+// each net/http.c handler's json_str/json_int calls, same verification
+// standard as every command above.
+
+register({
+  // "login" was a session uid/gid switch in shell.c, but net/http.c always
+  // reseeds identity from the bearer token on every request -- promoted as
+  // a read-only identity check instead of a state-mutating (and inert)
+  // impersonation call. See the block comment above this section.
+  name: "login", usage: "login  (shows your real session identity -- the HTTP API always reseeds uid/role from your bearer token, so this can't switch users)",
+  handler: async () => {
+    const d = await getJSON("/api/session/whoami");
+    if (errOf(d)) return err(errOf(d)!);
+    return { text: fmtKV(d) };
+  },
+});
+register({
+  name: "role set", usage: "role set <uid> <SYSTEM_KERNEL|DB_ADMIN|APP_USER|GUEST>", destructive: true,
+  handler: async (rest) => {
+    const [uid, role] = words(rest);
+    if (!uid || !role) return err("usage: role set <uid> <SYSTEM_KERNEL|DB_ADMIN|APP_USER|GUEST>");
+    const d = await postJSON("/api/role/set", { uid: parseInt(uid, 10) || 0, role: role.toUpperCase() });
+    if (!isOk(d)) return err(errOf(d) || "role set failed");
+    return ok(`role set for uid ${uid}`);
+  },
+});
+register({
+  name: "grant", usage: "grant <uid> <object> <perm>", destructive: true,
+  handler: async (rest) => {
+    const [uid, object, perm] = words(rest);
+    if (!uid || !object || !perm) return err("usage: grant <uid> <object> <perm>");
+    const d = await postJSON("/api/grant", { uid: parseInt(uid, 10) || 0, object, perm });
+    if (!isOk(d)) return err(errOf(d) || "grant failed");
+    return ok(`granted '${perm}' on '${object}' to uid ${uid}`);
+  },
+});
+register({
+  name: "revoke", usage: "revoke <uid> <object> <perm>", destructive: true,
+  handler: async (rest) => {
+    const [uid, object, perm] = words(rest);
+    if (!uid || !object || !perm) return err("usage: revoke <uid> <object> <perm>");
+    const d = await postJSON("/api/revoke", { uid: parseInt(uid, 10) || 0, object, perm });
+    if (!isOk(d)) return err(errOf(d) || "revoke failed");
+    return ok(`revoked '${perm}' on '${object}' from uid ${uid}`);
+  },
+});
+register({
+  name: "chmod", usage: "chmod <name> <mask_hex>", destructive: true,
+  handler: async (rest) => {
+    const [name, mask] = words(rest);
+    if (!name || !mask) return err("usage: chmod <name> <mask_hex>");
+    const d = await postJSON("/api/chmod", { name, mask });
+    if (!isOk(d)) return err(errOf(d) || "chmod failed");
+    return ok(`'${name}' permission mask set to ${mask}`);
+  },
+});
+register({
+  name: "auth create", usage: "auth create <email> <uid> <SYSTEM_KERNEL|DB_ADMIN|APP_USER|GUEST> <password>  (requires DB_ADMIN+)", destructive: true,
+  handler: async (rest) => {
+    const [email, uid, role, password] = words(rest);
+    if (!email || !uid || !role || !password) return err("usage: auth create <email> <uid> <SYSTEM_KERNEL|DB_ADMIN|APP_USER|GUEST> <password>");
+    const d = await postJSON("/api/auth/create", { email, uid: parseInt(uid, 10) || 0, role: role.toUpperCase(), password });
+    if (!isOk(d)) return err(errOf(d) || "auth create failed");
+    // Plaintext token returned once, same as shell.c's own one-time "[AUTH]
+    // Token: ..." print -- there's no other way to learn a freshly-created
+    // account's token afterward (auth list only ever shows an 8-char preview).
+    return ok(`account '${email}' created${d.token ? ` — token: ${d.token}` : ""}`);
+  },
+});
+register({
+  name: "auth list", usage: "auth list",
+  handler: async () => {
+    const d = await getJSON("/api/auth/tokens");
+    return { text: fmtTable(d?.tokens, ["email", "uid", "role", "token_preview"]) };
+  },
+});
+register({
+  name: "auth revoke", usage: "auth revoke <email>  (requires DB_ADMIN+)", destructive: true,
+  handler: async (rest) => {
+    const [email] = words(rest);
+    if (!email) return err("usage: auth revoke <email>");
+    const d = await postJSON("/api/auth/revoke", { email });
+    if (!isOk(d)) return err(errOf(d) || "auth revoke failed");
+    return ok(`revoked token(s) for '${email}'`);
+  },
+});
+register({
+  name: "seal", usage: "seal <name> <password>",
+  handler: async (rest) => {
+    const [name, password] = words(rest);
+    if (!name || !password) return err("usage: seal <name> <password>");
+    const d = await postJSON("/api/seal", { name, password });
+    if (!isOk(d)) return err(errOf(d) || "seal failed");
+    return ok(`'${name}' sealed`);
+  },
+});
+register({
+  name: "svc crash", usage: "svc crash <name>", destructive: true,
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: svc crash <name>");
+    const d = await postJSON("/api/svc/crash", { name });
+    if (!isOk(d)) return err(errOf(d) || "svc crash failed");
+    return ok(`'${name}' crashed`);
+  },
+});
+register({
+  name: "svc restart", usage: "svc restart <name>", destructive: true,
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: svc restart <name>");
+    const d = await postJSON("/api/svc/restart", { name });
+    if (!isOk(d)) return err(errOf(d) || "svc restart failed");
+    return ok(`'${name}' restarted`);
+  },
+});
+register({
+  name: "proc kill", usage: "proc kill <pid>", destructive: true,
+  handler: async (rest) => {
+    const [pid] = words(rest);
+    if (!pid) return err("usage: proc kill <pid>");
+    const d = await postJSON("/api/proc/kill", { pid: parseInt(pid, 10) || 0 });
+    if (!isOk(d)) return err(errOf(d) || "proc kill failed");
+    return ok(`pid ${pid} killed`);
+  },
+});
+register({
+  name: "ipc post", usage: "ipc post <svc_name> <opcode_hex>",
+  handler: async (rest) => {
+    const [service, opcode] = words(rest);
+    if (!service || !opcode) return err("usage: ipc post <svc_name> <opcode_hex>");
+    const d = await postJSON("/api/ipc/post", { service, opcode });
+    if (!isOk(d)) return err(errOf(d) || "ipc post failed");
+    return ok(`posted ${opcode} to '${service}' (port ${d.port})`);
+  },
+});
+register({
+  name: "ipc stat", usage: "ipc stat",
+  handler: async () => {
+    // Genuinely-unexposed real ipc_stats + per-queue depth -- deliberately
+    // NOT a mirror of shell.c's own "ipc stat", which is actually aliased
+    // to the service list in syscall_dispatch.c ("combined view"). See
+    // api_ipc_stat()'s own comment in net/http.c for the full rationale.
+    const d = await getJSON("/api/ipc/stat");
+    if (errOf(d)) return err(errOf(d)!);
+    const queues = d.queues;
+    delete d.queues;
+    let text = fmtKV(d);
+    if (queues?.length) text += "\n\nqueues:\n" + fmtTable(queues, ["port", "depth"]);
+    return { text };
+  },
+});
+register({
+  name: "journal create", usage: "journal create <name>",
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: journal create <name>");
+    const d = await postJSON("/api/journal", { name });
+    if (!isOk(d)) return err(errOf(d) || "journal create failed");
+    return ok(`journal '${name}' created — object_id=${d.object_id}`);
+  },
+});
+register({
+  name: "journal purge", usage: "journal purge <name>", destructive: true,
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: journal purge <name>");
+    const d = await postJSON("/api/journal/purge", { name });
+    if (!isOk(d)) return err(errOf(d) || "journal purge failed");
+    return ok(`journal '${name}' purged`);
+  },
+});
+register({
+  name: "tier promote", usage: "tier promote <name>",
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: tier promote <name>");
+    const d = await postJSON("/api/tier/promote", { name });
+    if (!isOk(d)) return err(errOf(d) || "tier promote failed");
+    return ok(`'${name}' promoted a tier`);
+  },
+});
+register({
+  name: "tier demote", usage: "tier demote <name>",
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: tier demote <name>");
+    const d = await postJSON("/api/tier/demote", { name });
+    if (!isOk(d)) return err(errOf(d) || "tier demote failed");
+    return ok(`'${name}' demoted a tier`);
+  },
+});
+register({
+  name: "vfree", usage: "vfree <name>", destructive: true,
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: vfree <name>");
+    const d = await postJSON("/api/vfree", { name });
+    if (!isOk(d)) return err(errOf(d) || "vfree failed");
+    return ok(`'${name}' freed`);
+  },
+});
+register({
+  name: "workflow addstep", usage: "workflow addstep <workflow> <agent> <in> <out>",
+  handler: async (rest) => {
+    const [workflow, agent, inKey, outKey] = words(rest);
+    if (!workflow || !agent || !inKey || !outKey) return err("usage: workflow addstep <workflow> <agent> <in> <out>");
+    const d = await postJSON("/api/workflow/addstep", { workflow, agent, in: inKey, out: outKey });
+    if (!isOk(d)) return err(errOf(d) || "workflow addstep failed");
+    return ok(`step added to '${workflow}'`);
+  },
+});
+register({
+  name: "webapp set", usage: "webapp set <obj> <path> <content>",
+  handler: async (rest) => {
+    const [obj, path, ...content] = words(rest);
+    if (!obj || !path || !content.length) return err("usage: webapp set <obj> <path> <content>");
+    const d = await postJSON("/api/webapp/set", { obj, path, content: content.join(" ") });
+    if (!isOk(d)) return err(errOf(d) || "webapp set failed");
+    return ok(`'${path}' set on '${obj}'`);
+  },
+});
+register({
+  name: "webapp append", usage: "webapp append <obj> <path> <content>",
+  handler: async (rest) => {
+    const [obj, path, ...content] = words(rest);
+    if (!obj || !path || !content.length) return err("usage: webapp append <obj> <path> <content>");
+    const d = await postJSON("/api/webapp/append", { obj, path, content: content.join(" ") });
+    if (!isOk(d)) return err(errOf(d) || "webapp append failed");
+    return ok(`content appended to '${obj}' at '${path}'`);
+  },
+});
+register({
+  name: "webapp list", usage: "webapp list [<obj>]",
+  handler: async (rest) => {
+    const [obj] = words(rest);
+    const d = await getJSON(`/api/webapp/list${obj ? `?obj=${encodeURIComponent(obj)}` : ""}`);
+    if (errOf(d)) return err(errOf(d)!);
+    return { text: fmtTable(d.assets, ["obj", "path", "mime", "content_len"]) };
+  },
+});
+register({
+  name: "write", usage: "write <name> <payload>  (legacy raw heap write)",
+  handler: async (rest) => {
+    const [name, ...payload] = words(rest);
+    if (!name || !payload.length) return err("usage: write <name> <payload>");
+    const d = await postJSON("/api/write", { name, payload: payload.join(" ") });
+    if (!isOk(d)) return err(errOf(d) || "write failed");
+    return ok(`wrote payload to '${name}'`);
+  },
+});
+register({
+  name: "demo", usage: "demo <name>  (legacy loader demo)",
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: demo <name>");
+    const d = await postJSON("/api/demo", { name });
+    if (!isOk(d)) return err(errOf(d) || "demo failed");
+    return ok(`demo binary uploaded and spawned as '${name}'`);
+  },
+});
+register({
+  name: "load", usage: "load <name>  (legacy loader)",
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: load <name>");
+    const d = await postJSON("/api/load", { name });
+    if (!isOk(d)) return err(errOf(d) || "load failed");
+    return ok(`'${name}' loaded — entry_point=${d.entry_point}`);
+  },
+});
+register({
+  name: "loader list", usage: "loader list  (legacy loader)",
+  handler: async () => {
+    const d = await getJSON("/api/loader/list");
+    return { text: fmtTable(d?.binaries, ["name", "size", "format"]) };
+  },
+});
+register({
+  name: "upload", usage: "upload <name> <hex>  (legacy loader upload -- see 'program upload'/'stream upload')",
+  handler: async (rest) => {
+    const [name, hex] = words(rest);
+    if (!name || !hex) return err("usage: upload <name> <hex>");
+    const d = await postJSON("/api/upload", { name, hex });
+    if (!isOk(d)) return err(errOf(d) || "upload failed");
+    return ok(`${d.bytes_written} byte(s) written to '${name}'`);
+  },
+});
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 // Longest command name (by word count) wins, so "vec index search" is tried
 // before "vec" would ever be (and "vec" alone was never registered as its
 // own command in the first place — see byFirstWord's role below instead).
-const ALL_NAMES = [
-  ...COMMANDS.map(c => c.name),
-  ...Object.keys(SHELL_FALLBACK_COMMANDS),
-].sort((a, b) => b.split(" ").length - a.split(" ").length || b.length - a.length);
+const ALL_NAMES = COMMANDS.map(c => c.name)
+  .sort((a, b) => b.split(" ").length - a.split(" ").length || b.length - a.length);
 
 export function isDestructive(commandLine: string): boolean {
   const matched = matchCommand(commandLine);
   if (!matched) return false;
   const spec = COMMANDS.find(c => c.name === matched.name);
-  if (spec) return !!spec.destructive;
-  return !!SHELL_FALLBACK_COMMANDS[matched.name]?.destructive;
+  return !!spec?.destructive;
 }
 
 function matchCommand(input: string): { name: string; rest: string } | null {
@@ -1213,20 +1421,13 @@ export async function runCommand(input: string): Promise<CommandResult> {
     return err(`command not found: ${firstWord} (try 'help')`);
   }
 
-  const spec = COMMANDS.find(c => c.name === matched.name);
-  if (spec) {
-    try {
-      return await spec.handler(matched.rest);
-    } catch (e: any) {
-      return err(e?.message || "request failed");
-    }
-  }
-
-  // No purpose-built route for this one -- fall through to the kernel's
-  // own shell dispatch via POST /api/shell/exec (§10.6) instead of the old
-  // static "not available over the web yet" message.
+  // Every registered name in ALL_NAMES comes from COMMANDS, so this is
+  // always found -- the Shell-Command JSON-Promotion Roadmap retired the
+  // legacy POST /api/shell/exec fallback path that used to sit here once
+  // every real shell.c command got its own purpose-built JSON route.
+  const spec = COMMANDS.find(c => c.name === matched.name)!;
   try {
-    return await execViaShellFallback(trimmed);
+    return await spec.handler(matched.rest);
   } catch (e: any) {
     return err(e?.message || "request failed");
   }
@@ -1234,16 +1435,9 @@ export async function runCommand(input: string): Promise<CommandResult> {
 
 function helpText(): string {
   const have = COMMANDS.map(c => `  ${c.usage}`).sort();
-  const fallback = Object.entries(SHELL_FALLBACK_COMMANDS).map(([, v]) => `  ${v.usage}  (via legacy shell dispatch)`).sort();
   return [
     "Available commands:",
     ...have,
-    "",
-    "Also available, routed through the kernel's legacy shell dispatch",
-    "(POST /api/shell/exec -- plain-text output, not structured JSON like",
-    "the commands above; a syntax mismatch against the exact usage below",
-    "will come back as 'Unknown command'):",
-    ...fallback,
     "",
     "clear                        clear the screen",
     "help                         this message",

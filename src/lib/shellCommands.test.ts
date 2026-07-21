@@ -11,8 +11,8 @@
  * category in the registry: the right path, HTTP method, and body shape go
  * out, and the formatted CommandResult text reflects the mocked response.
  * Also covers the router-level behavior that isn't route-specific: unknown
- * commands, the shell-fallback route (POST /api/shell/exec, for commands
- * with no dedicated HTTP route), and isDestructive().
+ * commands, a sample of the formerly-legacy commands promoted to real JSON
+ * routes by the Shell-Command JSON-Promotion Roadmap, and isDestructive().
  *
  * Run (no test framework needed, just tsc's own JS emitter + node):
  *   tsc --module commonjs --target es2020 --esModuleInterop --skipLibCheck \
@@ -160,27 +160,34 @@ async function main() {
   const unknown = await runCommand("frobnicate");
   check("unknown command errors", unknown.isError === true && unknown.text.includes("command not found"), unknown.text);
 
-  // ── Shell-fallback commands (Kernel-Side Shell Refactor follow-on): no
-  // dedicated route, routed through POST /api/shell/exec instead ─────────
-  calls = []; mockNext({ ok: "true", output: "" });
+  // ── Formerly-legacy commands (Shell-Command JSON-Promotion Roadmap): all
+  // 28 now hit dedicated JSON routes instead of POST /api/shell/exec ──────
+  calls = []; mockNext({ ok: "true" });
   const vfreeRes = await runCommand("vfree foo");
-  eq("vfree (fallback): path", lastCall().url, "/api/shell/exec");
-  eq("vfree (fallback): method", lastCall().method, "POST");
-  eq("vfree (fallback): body", lastCall().body, { command: "vfree foo" });
-  check("vfree (fallback): recognized, no output -> placeholder text", vfreeRes.text === "(no output)" && !vfreeRes.isError, vfreeRes.text);
+  eq("vfree: path", lastCall().url, "/api/vfree");
+  eq("vfree: method", lastCall().method, "POST");
+  eq("vfree: body", lastCall().body, { name: "foo" });
+  check("vfree: not an error", !vfreeRes.isError, vfreeRes.text);
 
-  calls = []; mockNext({ ok: "true", output: "Session credentials updated: uid=7 gid=7 role=APP_USER\n" });
-  const loginRes = await runCommand("login 7 7");
-  eq("login (fallback): body", lastCall().body, { command: "login 7 7" });
-  check("login (fallback): trims trailing newline, not an error", loginRes.text === "Session credentials updated: uid=7 gid=7 role=APP_USER" && !loginRes.isError, loginRes.text);
+  calls = []; mockNext({ uid: 7, role: "APP_USER" });
+  const loginRes = await runCommand("login");
+  eq("login: path (whoami, read-only)", lastCall().url, "/api/session/whoami");
+  eq("login: method", lastCall().method, "GET");
+  check("login: shows real identity, not an error", loginRes.text.includes("APP_USER") && !loginRes.isError, loginRes.text);
 
-  calls = []; mockNext({ ok: "false", output: "Unknown command: 'vfree'. Type 'help' for usage.\n" });
-  const badFallback = await runCommand("vfree");
-  check("fallback command kernel didn't recognize -> isError true", badFallback.isError === true && badFallback.text.includes("Unknown command"), badFallback.text);
+  calls = []; mockNext({ ok: "false", error: "object not found" });
+  const badVfree = await runCommand("vfree nope");
+  check("vfree: kernel-reported failure -> isError true", badVfree.isError === true && badVfree.text.includes("object not found"), badVfree.text);
+
+  calls = []; mockNext({ ok: "true", bytes_written: 4 });
+  await runCommand("upload prog deadbeef");
+  eq("upload (legacy loader): path", lastCall().url, "/api/upload");
+  eq("upload (legacy loader): body", lastCall().body, { name: "prog", hex: "deadbeef" });
 
   check("isDestructive: partition destroy", isDestructive("partition destroy 4") === true);
-  check("isDestructive: vfree (fallback, still flagged)", isDestructive("vfree foo") === true);
+  check("isDestructive: vfree (promoted, still flagged)", isDestructive("vfree foo") === true);
   check("isDestructive: agent kill", isDestructive("agent kill a1") === true);
+  check("isDestructive: login (read-only, not flagged)", isDestructive("login") === false);
   check("isDestructive: ls (not destructive)", isDestructive("ls") === false);
   check("isDestructive: sql SELECT (not destructive)", isDestructive("sql SELECT * FROM foo") === false);
 
@@ -188,7 +195,7 @@ async function main() {
   check("empty input is a no-op", emptyRes.text === "" && !emptyRes.isError);
 
   const help = await runCommand("help");
-  check("help lists commands", help.text.includes("valloc") && help.text.includes("via legacy shell dispatch"));
+  check("help lists commands", help.text.includes("valloc") && help.text.includes("vfree") && help.text.includes("login"));
 
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
