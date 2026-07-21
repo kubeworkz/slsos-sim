@@ -5,10 +5,21 @@ import { motion, AnimatePresence } from "motion/react";
 
 interface SlsSystemHealthProps {
   systemMetrics: SlsSystemMetrics;
-  setSystemMetrics?: React.Dispatch<React.SetStateAction<SlsSystemMetrics>>;
+  // Navigator-Parity Gap Roadmap Phase 1: this used to be `setSystemMetrics`,
+  // which the old "Compact & Optimize Memory" button called directly to
+  // fake a 75% reduction in pageFaultCount — a real, monotonically-
+  // increasing kernel counter (App.tsx's poll loop maps it from the
+  // kernel's own /api/metrics `total_promotions` field) that cannot
+  // actually decrease. The very next 5s poll tick would silently overwrite
+  // the fake "improvement" with the real value anyway, so the old button
+  // was lying for a few seconds at a time about kernel state. `onRefreshNow`
+  // is App.tsx's real poll() function (lifted out of its effect for this
+  // purpose) — the button now honestly re-fetches live kernel state instead
+  // of fabricating an improvement to it.
+  onRefreshNow?: () => void | Promise<void>;
 }
 
-export default function SlsSystemHealth({ systemMetrics, setSystemMetrics }: SlsSystemHealthProps) {
+export default function SlsSystemHealth({ systemMetrics, onRefreshNow }: SlsSystemHealthProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [optStep, setOptStep] = useState<string>("");
@@ -58,47 +69,41 @@ export default function SlsSystemHealth({ systemMetrics, setSystemMetrics }: Sls
     progressColor = "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]";
   }
 
-  // Optimize handler (reduces page fault rate count by flushing back to DRAM cache)
-  const handleOptimize = () => {
-    if (!setSystemMetrics) return;
+  // Navigator-Parity Gap Roadmap Phase 1: this used to fabricate a 75%
+  // reduction in a real kernel counter after an animated fake "compaction"
+  // sequence — a real, monotonically-increasing counter that cannot
+  // legitimately decrease, and would get silently overwritten with the true
+  // value on the next 5s poll anyway. There is no compaction/defragmentation
+  // operation in the kernel today to honestly back that action (confirmed:
+  // no such route exists in net/http.c), so rather than keep faking one,
+  // this now honestly does the one real thing available — an immediate
+  // re-fetch of live kernel state via App.tsx's own poll() — and reports
+  // that plainly rather than claiming an improvement that didn't happen.
+  const handleRefresh = async () => {
+    if (!onRefreshNow) return;
     setIsOptimizing(true);
     setSuccessMsg(false);
 
     const steps = [
-      "Locking translation table registers...",
-      "Pre-fetching hot L4 archival blocks...",
-      "Decompressing LZX sectors into RAM buffer...",
-      "Re-allocating uncompressed page frames...",
-      "Compacting DRAM page tables...",
-      "Verification complete: Parity OK!"
+      "Querying /api/health...",
+      "Querying /api/metrics...",
+      "Querying /api/tiers...",
+      "Reconciling live kernel state...",
     ];
 
     let currentStep = 0;
     setOptStep(steps[0]);
+    const stepTimer = setInterval(() => {
+      currentStep = Math.min(currentStep + 1, steps.length - 1);
+      setOptStep(steps[currentStep]);
+    }, 350);
 
-    const interval = setInterval(() => {
-      currentStep++;
-      if (currentStep < steps.length) {
-        setOptStep(steps[currentStep]);
-      } else {
-        clearInterval(interval);
-        
-        // Success: Reset/improve system metrics
-        setSystemMetrics(prev => {
-          // Keep same accesses, but scale down page fault counts as if they were optimized or resolved!
-          const nextFaults = Math.max(0, Math.floor(prev.pageFaultCount * 0.25));
-          return {
-            ...prev,
-            pageFaultCount: nextFaults,
-            l2DramHits: prev.l2DramHits + (prev.pageFaultCount - nextFaults)
-          };
-        });
+    await onRefreshNow();
 
-        setIsOptimizing(false);
-        setSuccessMsg(true);
-        setTimeout(() => setSuccessMsg(false), 4000);
-      }
-    }, 800);
+    clearInterval(stepTimer);
+    setIsOptimizing(false);
+    setSuccessMsg(true);
+    setTimeout(() => setSuccessMsg(false), 4000);
   };
 
   return (
@@ -223,11 +228,11 @@ export default function SlsSystemHealth({ systemMetrics, setSystemMetrics }: Sls
                   </div>
                 ) : (
                   <button
-                    onClick={handleOptimize}
-                    disabled={score < 10}
+                    onClick={handleRefresh}
+                    disabled={!onRefreshNow}
                     className="w-full bg-[#0F1219] hover:bg-white/5 disabled:opacity-40 border border-cyan-400/30 hover:border-cyan-400 text-cyan-400 py-1.5 font-mono text-[10px] tracking-wider uppercase transition-colors flex items-center justify-center gap-2 cursor-pointer"
                   >
-                    <Zap className="w-3 h-3" /> Compact & Optimize Memory
+                    <Zap className="w-3 h-3" /> Refresh Kernel Telemetry
                   </button>
                 )}
 
@@ -237,7 +242,7 @@ export default function SlsSystemHealth({ systemMetrics, setSystemMetrics }: Sls
                     animate={{ opacity: 1, y: 0 }}
                     className="mt-2 text-emerald-400 font-mono text-[9px] text-center flex items-center justify-center gap-1"
                   >
-                    <CheckCircle2 className="w-3 h-3" /> System Health Restored to 100%!
+                    <CheckCircle2 className="w-3 h-3" /> Telemetry refreshed from live kernel
                   </motion.div>
                 )}
               </div>

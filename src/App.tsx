@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { 
   SlsObject, 
   MemoryPage, 
@@ -424,7 +424,13 @@ export default function App() {
   // ── Live kernel polling (every 5 s) ────────────────────────────────────────
   // Syncs health/uptime, microkernel services, WAL log, and tier statistics
   // directly from the running AeroSLS kernel so the simulation stays accurate.
-  useEffect(() => {
+  // `poll` is hoisted out to its own useCallback (Navigator-Parity Gap Roadmap
+  // Phase 1) rather than living only inside the effect below, so it can also
+  // be handed to SlsSystemHealth as a real "refresh now" action — replacing
+  // that component's old fake "Compact & Optimize Memory" behavior (which
+  // locally faked a reduction in a real, monotonically-increasing kernel
+  // counter) with an honest immediate re-fetch of true kernel state instead.
+  const poll = useCallback(async () => {
     // Static service metadata the kernel doesn't expose (descriptions, latency)
     const SERVICE_META: Record<string, { id: string; latencyMs: number; description: string; memoryAddress: string }> = {
       VirtualMemoryMgr:   { id: "mem_mgr",   latencyMs: 1.2, memoryAddress: "0x0000_0000_1000_1000", description: "Manages SLS address translation, page faults, and persistent heap page allocation." },
@@ -435,9 +441,8 @@ export default function App() {
       AgentRuntimeMgr:    { id: "agent_mgr", latencyMs: 0.0, memoryAddress: "0x0000_0000_1000_6000", description: "Manages AI agent lifecycle (create/run/kill/schedule), routes IPC messages to the ReAct inference engine." },
     };
 
-    const poll = async () => {
-      try {
-        const [healthRes, svcRes, walRes, tiersRes, objRes, metricsRes] = await Promise.all([
+    try {
+      const [healthRes, svcRes, walRes, tiersRes, objRes, metricsRes] = await Promise.all([
           authFetch("/api/health").then(r => r.json()).catch(() => null),
           authFetch("/api/services").then(r => r.json()).catch(() => null),
           authFetch("/api/wal").then(r => r.json()).catch(() => null),
@@ -526,13 +531,14 @@ export default function App() {
             return fresh.length ? [...prev, ...fresh] : prev;
           });
         }
-      } catch { /* kernel offline — silent */ }
-    };
+    } catch { /* kernel offline — silent */ }
+  }, []);  // stable — no deps needed, poll closure captures setters
 
+  useEffect(() => {
     poll();                                // immediate first run
     const id = setInterval(poll, 5000);   // then every 5 s
     return () => clearInterval(id);
-  }, []);  // stable — no deps needed, poll closure captures setters
+  }, [poll]);
   const saveStateToStorage = (
     currentObjects: SlsObject[],
     currentServices: MicrokernelService[],
@@ -1218,7 +1224,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center border-r border-white/10 pr-4">
-            <SlsSystemHealth systemMetrics={systemMetrics} setSystemMetrics={setSystemMetrics} />
+            <SlsSystemHealth systemMetrics={systemMetrics} onRefreshNow={poll} />
           </div>
 
           <button
