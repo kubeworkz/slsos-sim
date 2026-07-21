@@ -878,11 +878,28 @@ export default function App() {
       return next;
     });
 
-    // If it was a page fault, let's automatically promote the object back to L2_DRAM!
-    if (isPageFault && page && page.objectId) {
-      setTimeout(() => {
-        handleMigrateObjectTier(page.objectId!, StorageTier.L2_DRAM);
-      }, 500);
+    // Automatic promotion on access: any hit below the top tier nudges the
+    // object one level hotter, so frequently-touched data naturally floats
+    // back up instead of sitting cold forever once the demotion daemon has
+    // moved it down (the daemon itself only ever demotes — see its own
+    // comment above). L4_ARCHIVE keeps its existing special-cased recovery
+    // (jumps straight to L2_DRAM, tied to the fault/swap animation in
+    // SlsMemoryMap.tsx); L2_DRAM and L3_SSD hits get a quieter one-level
+    // promotion here with no animation.
+    if (page && page.objectId) {
+      if (isPageFault) {
+        setTimeout(() => {
+          handleMigrateObjectTier(page.objectId!, StorageTier.L2_DRAM);
+        }, 500);
+      } else if (hitLocation === StorageTier.L3_SSD) {
+        setTimeout(() => {
+          handleMigrateObjectTier(page.objectId!, StorageTier.L2_DRAM);
+        }, 500);
+      } else if (hitLocation === StorageTier.L2_DRAM) {
+        setTimeout(() => {
+          handleMigrateObjectTier(page.objectId!, StorageTier.L1_CACHE);
+        }, 500);
+      }
     }
 
     return { hit: page?.objectId !== null, latency, pageFault: isPageFault };
