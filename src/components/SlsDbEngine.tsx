@@ -1996,6 +1996,7 @@ export default function SlsDbEngine({ objects, activeUser }: SlsDbEngineProps) {
         {dbTab === "mqt"       && <MqtDashboard />}
         {dbTab === "programs"  && <ProgramManager />}
         {dbTab === "streams"   && <StreamLibrary />}
+        {dbTab === "databases" && <DatabasesPanel />}
       </div>
     </div>
   );
