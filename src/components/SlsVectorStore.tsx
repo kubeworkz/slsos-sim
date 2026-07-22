@@ -14,8 +14,8 @@
  * SqlConsole's own independent loadTables()), not lifted into shared
  * parent state.
  */
-import React, { useState, useEffect, useCallback } from "react";
-import { Boxes, Upload, Search, Network, RefreshCw, Plus, Trash2, Wand2, Sparkles } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Boxes, Upload, Search, Network, RefreshCw, Plus, Trash2, Wand2, Sparkles, Download } from "lucide-react";
 import { authFetch, authHeaders } from "../lib/apiFetch";
 
 // ─── Shared fetch helpers ───────────────────────────────────────────────────
@@ -84,6 +84,18 @@ function CollectionsPanel() {
   const [msg, setMsg]                 = useState("");
   const [armedDelete, setArmedDelete] = useState<string | null>(null);
 
+  // ── VectorStore Interface Roadmap Phase 5/6 follow-on: Export/Import
+  // Collections (definitions only -- COLLECTION/INDEX text, not the
+  // vector data itself, matching this pair's own backend scope). Mirrors
+  // SlsDbEngine.tsx's SQL Console Export/Import Schema buttons exactly:
+  // same Blob+download-link export, same hidden-file-input+POST import,
+  // same `=== "true"` string-boolean convention every route in this app
+  // already uses (never a real JSON boolean -- see net/http.c's jb_str()).
+  const [exportingSchema, setExportingSchema] = useState(false);
+  const [importingSchema, setImportingSchema] = useState(false);
+  const [schemaMsg, setSchemaMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
+
   const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 4000); };
 
   const load = useCallback(async () => {
@@ -93,6 +105,60 @@ function CollectionsPanel() {
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  const handleExportSchema = useCallback(async () => {
+    setExportingSchema(true);
+    setSchemaMsg(null);
+    try {
+      const data = await kFetch("/api/vec/schema/export");
+      const text: string = data?.text || "";
+      if (!text) {
+        setSchemaMsg({ ok: false, text: "Nothing to export — no readable vector collections." });
+      } else {
+        const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        a.href = url; a.download = `aerosls_vector_schema_${stamp}.txt`; a.click();
+        URL.revokeObjectURL(url);
+        setSchemaMsg({ ok: true, text: `Exported ${data?.bytes ?? text.length} bytes to file.` });
+      }
+    } catch (e: any) {
+      setSchemaMsg({ ok: false, text: e?.message || "export failed" });
+    }
+    setExportingSchema(false);
+  }, []);
+
+  const handleImportSchemaClick = () => importFileRef.current?.click();
+
+  const handleImportSchemaFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportingSchema(true);
+    setSchemaMsg(null);
+    try {
+      const text = await file.text();
+      const data = await kFetch("/api/vec/schema/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const lines: { ok: string; error?: string }[] = data?.lines || [];
+      const firstError = lines.find(l => l.ok !== "true")?.error;
+      const failed = Number(data?.failed ?? 0);
+      setSchemaMsg({
+        ok: failed === 0,
+        text: `${data?.succeeded ?? 0}/${data?.total ?? 0} line(s) succeeded` +
+              (failed ? `, ${failed} failed${firstError ? ` (${firstError})` : ""}` : "") +
+              (data?.truncated === "true" ? " — import truncated at 64 lines" : ""),
+      });
+      load();
+    } catch (err: any) {
+      setSchemaMsg({ ok: false, text: err?.message || "import failed" });
+    }
+    setImportingSchema(false);
+    if (importFileRef.current) importFileRef.current.value = "";
+  }, [load]);
 
   // Collections require an already-existing catalog object
   // (sys_sls_vec_create()'s own precondition) -- chains POST /api/valloc
@@ -147,10 +213,47 @@ function CollectionsPanel() {
         <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">
           {collections.length} Vector Collection{collections.length !== 1 ? "s" : ""}
         </span>
-        <button onClick={load} className="flex items-center gap-1.5 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors">
-          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Refresh
-        </button>
+        <div className="flex items-center gap-4">
+          <input
+            ref={importFileRef}
+            type="file"
+            accept=".txt"
+            className="hidden"
+            onChange={handleImportSchemaFile}
+          />
+          <button
+            onClick={handleImportSchemaClick}
+            disabled={importingSchema}
+            title="Import a COLLECTION/INDEX definition dump (no vector data)"
+            className="flex items-center gap-1.5 text-white/40 hover:text-cyan-400 transition-colors font-mono text-[9px] uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Upload className="w-3 h-3" /> {importingSchema ? "Importing…" : "Import Collections"}
+          </button>
+          <button
+            onClick={handleExportSchema}
+            disabled={exportingSchema}
+            title="Export every readable collection's COLLECTION/INDEX definitions (no vector data)"
+            className="flex items-center gap-1.5 text-white/40 hover:text-cyan-400 transition-colors font-mono text-[9px] uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Download className="w-3 h-3" /> {exportingSchema ? "Exporting…" : "Export Collections"}
+          </button>
+          <button onClick={load} className="flex items-center gap-1.5 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors">
+            <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Refresh
+          </button>
+        </div>
       </div>
+
+      {schemaMsg && (
+        <div className={`text-[10px] font-mono px-3 py-2 border ${
+          schemaMsg.ok ? "border-green-400/20 bg-green-400/5 text-green-300/80" : "border-red-400/20 bg-red-400/5 text-red-300/80"
+        }`}>
+          {schemaMsg.text}
+        </div>
+      )}
+      <p className="text-[9px] font-mono text-white/30 leading-relaxed">
+        Export/Import cover collection and index <span className="text-cyan-400">definitions</span> only (name,
+        dimension, index metric) — not the vector data itself. Import schema before data if restoring both.
+      </p>
 
       {msg && <div className="bg-[#0d1117] border border-white/10 px-4 py-2 text-[11px] font-mono text-white/70">{msg}</div>}
 
