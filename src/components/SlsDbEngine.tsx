@@ -195,6 +195,10 @@ function SqlConsole() {
   const [running, setRunning]         = useState(false);
   const [history, setHistory]         = useState<string[]>([]);
   const textareaRef                   = useRef<HTMLTextAreaElement>(null);
+  const [exportingSchema, setExportingSchema] = useState(false);
+  const [importingSchema, setImportingSchema] = useState(false);
+  const [schemaMsg, setSchemaMsg]     = useState<{ ok: boolean; text: string } | null>(null);
+  const importFileRef                 = useRef<HTMLInputElement>(null);
 
   const loadTables = useCallback(async () => {
     setTablesLoading(true);
@@ -241,6 +245,67 @@ function SqlConsole() {
     setSql(query);
     runSql(query);
   }, [runSql]);
+
+  // ── Schema export/import (SQL Feature-Parity Roadmap, Phase 8 follow-on) ──
+  // GET /api/schema/export -> {sql, bytes}; POST /api/schema/import ->
+  // {total, succeeded, failed, truncated?, statements:[{offset, ok, error?}]}.
+  // "ok"/"truncated" travel as the JSON strings "true"/"false" (jb_str(), not
+  // a real JSON boolean) -- same `=== "true"` convention every other route
+  // in this file already uses (see api/valloc, api/schema, api/tables).
+  const handleExportSchema = useCallback(async () => {
+    setExportingSchema(true);
+    setSchemaMsg(null);
+    try {
+      const data = await kFetch("/api/schema/export");
+      const text: string = data?.sql || "";
+      if (!text) {
+        setSchemaMsg({ ok: false, text: "Nothing to export — no readable row-store tables." });
+      } else {
+        const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        a.href = url; a.download = `aerosls_schema_${stamp}.sql`; a.click();
+        URL.revokeObjectURL(url);
+        setSchemaMsg({ ok: true, text: `Exported ${data?.bytes ?? text.length} bytes to file.` });
+      }
+    } catch (e: any) {
+      setSchemaMsg({ ok: false, text: e?.message || "export failed" });
+    }
+    setExportingSchema(false);
+  }, []);
+
+  const handleImportSchemaClick = () => importFileRef.current?.click();
+
+  const handleImportSchemaFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportingSchema(true);
+    setSchemaMsg(null);
+    try {
+      const text = await file.text();
+      const data = await kFetch("/api/schema/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sql: text }),
+      });
+      const stmts: { ok: string; error?: string }[] = data?.statements || [];
+      const firstError = stmts.find(s => s.ok !== "true")?.error;
+      const failed = Number(data?.failed ?? 0);
+      setSchemaMsg({
+        ok: failed === 0,
+        text: `${data?.succeeded ?? 0}/${data?.total ?? 0} statement(s) succeeded` +
+              (failed ? `, ${failed} failed${firstError ? ` (${firstError})` : ""}` : "") +
+              (data?.truncated === "true" ? " — import truncated at 64 statements" : ""),
+      });
+      loadTables();
+      if (selectedTable) selectTable(selectedTable);
+    } catch (err: any) {
+      setSchemaMsg({ ok: false, text: err?.message || "import failed" });
+    }
+    setImportingSchema(false);
+    if (importFileRef.current) importFileRef.current.value = "";
+  }, [loadTables, selectedTable, selectTable]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -324,8 +389,40 @@ function SqlConsole() {
             <span className="text-[9px] font-mono tracking-widest uppercase text-cyan-400 flex items-center gap-1.5">
               <TerminalSquare className="w-3.5 h-3.5" /> SQL Console
             </span>
-            <span className="text-[9px] font-mono text-white/20">⌘/Ctrl + Enter to run</span>
+            <div className="flex items-center gap-3">
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".sql,.txt"
+                className="hidden"
+                onChange={handleImportSchemaFile}
+              />
+              <button
+                onClick={handleImportSchemaClick}
+                disabled={importingSchema}
+                title="Import a .sql schema dump (CREATE TABLE/CREATE INDEX statements)"
+                className="flex items-center gap-1.5 text-white/40 hover:text-cyan-400 transition-colors font-mono text-[9px] uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Upload className="w-3 h-3" /> {importingSchema ? "Importing…" : "Import Schema"}
+              </button>
+              <button
+                onClick={handleExportSchema}
+                disabled={exportingSchema}
+                title="Export every readable table's schema as a .sql file"
+                className="flex items-center gap-1.5 text-white/40 hover:text-cyan-400 transition-colors font-mono text-[9px] uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Download className="w-3 h-3" /> {exportingSchema ? "Exporting…" : "Export Schema"}
+              </button>
+              <span className="text-[9px] font-mono text-white/20">⌘/Ctrl + Enter to run</span>
+            </div>
           </div>
+          {schemaMsg && (
+            <div className={`text-[10px] font-mono px-3 py-2 border ${
+              schemaMsg.ok ? "border-green-400/20 bg-green-400/5 text-green-300/80" : "border-red-400/20 bg-red-400/5 text-red-300/80"
+            }`}>
+              {schemaMsg.text}
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             value={sql}
