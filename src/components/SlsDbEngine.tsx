@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Database, BookOpen, BarChart3, Table2, RefreshCw, Play, Plus, Trash2, ChevronDown, ChevronRight, Upload, Terminal, FileText, Download, TerminalSquare, Rows3 } from "lucide-react";
+import { Database, BookOpen, BarChart3, Table2, RefreshCw, Play, Plus, Trash2, ChevronDown, ChevronRight, Upload, Terminal, FileText, Download, TerminalSquare, Rows3, Lock, ShieldCheck } from "lucide-react";
 import { SlsObject, SlsUser } from "../types/sls";
 import { DEMO_TOKEN, authHeaders, authFetch } from "../lib/apiFetch";
 
@@ -8,7 +8,7 @@ interface SlsDbEngineProps {
   activeUser: SlsUser | null;
 }
 
-type DbTab = "sql" | "schema" | "journal" | "mqt" | "programs" | "streams";
+type DbTab = "sql" | "schema" | "journal" | "mqt" | "programs" | "streams" | "databases";
 
 // ─── Shared fetch helper ──────────────────────────────────────────────────────
 // kFetch is this file's own convenience wrapper (auto-parses JSON, unlike
@@ -1613,6 +1613,335 @@ function StreamLibrary() {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 7. DATABASES PANEL — Database Namespace & Access Roadmap Phase 5
+//
+// Lists databases via the one dedicated JSON route Phase 4 built
+// (GET /api/security/databases -- name/database_id/owner_uid/grant
+// summary). Every mutation (create/drop/grant uid/grant group/check) has
+// no dedicated JSON route: Phase 4's own HTTP investigation found
+// group/authlist mutations are POST /api/shell/exec-only today, and
+// scoped database's HTTP surface to match that exact parity rather than
+// build ahead of it. This makes DatabasesPanel the first UI in this
+// codebase to actually call POST /api/shell/exec -- no prior panel
+// needed to, since the Shell-Command JSON-Promotion Roadmap retired the
+// old fallback plumbing for every command family it *did* promote, and
+// group/authlist/database were never in that list. shellExec() below is
+// a small, fresh wrapper: JSON body { command }, response
+// { ok: "true"|"false", output: <raw kernel-printed text> } -- ok
+// reflects whether shell.c recognized the command, not whether the
+// operation itself succeeded, so success/failure text lives inside
+// `output` and is surfaced to the user verbatim rather than re-parsed.
+// ─────────────────────────────────────────────────────────────────────────────
+interface DbSummary {
+  name: string;
+  database_id: number;
+  owner_uid: number;
+  grantee_uid_count: number;
+  grantee_group_count: number;
+  grant_perm_mask: number;
+}
+
+async function shellExec(command: string): Promise<{ ok: boolean; output: string }> {
+  const r = await authFetch("/api/shell/exec", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ command }),
+  });
+  const d = await r.json();
+  return { ok: d?.ok === "true", output: d?.output || "" };
+}
+
+const dbInputCls = "w-full bg-[#0F1219] border border-white/10 text-white font-mono text-xs px-3 py-2 outline-none focus:border-cyan-400/50";
+const dbLabelCls = "text-[9px] font-mono text-white/40 uppercase tracking-widest";
+
+// Permission bits match user/permissions.h exactly (PERM_READ=1, PERM_WRITE=2,
+// PERM_EXECUTE=4) -- database grant perm_mask is checked bitwise against these
+// same constants in database_check_access(), so the picker below builds the
+// same integer a Terminal user would type by hand.
+const DB_PERM_BITS: { bit: number; label: string }[] = [
+  { bit: 1, label: "Read" },
+  { bit: 2, label: "Write" },
+  { bit: 4, label: "Execute" },
+];
+
+function DbPermPicker({ mask, onChange }: { mask: number; onChange: (m: number) => void }) {
+  return (
+    <div className="flex gap-3">
+      {DB_PERM_BITS.map(p => (
+        <label key={p.bit} className="flex items-center gap-1.5 text-[10px] font-mono text-white/60 uppercase tracking-widest cursor-pointer">
+          <input
+            type="checkbox"
+            checked={(mask & p.bit) === p.bit}
+            onChange={e => onChange(e.target.checked ? mask | p.bit : mask & ~p.bit)}
+            className="accent-cyan-400"
+          />
+          {p.label}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+// Destructive-drop confirm -- no prior delete/drop UI existed anywhere in
+// this file before this panel, so this mirrors SlsVectorStore.tsx's own
+// ConfirmDeleteButton pattern (arm on first click, Confirm/Cancel on
+// second) rather than inventing a third convention.
+function ConfirmDropButton({ armed, onArm, onConfirm, onCancel, label }: {
+  armed: boolean; onArm: () => void; onConfirm: () => void; onCancel: () => void; label: string;
+}) {
+  if (!armed) {
+    return (
+      <button onClick={onArm} className="text-white/30 hover:text-red-400 transition-colors" title={`Drop ${label}`}>
+        <Trash2 className="w-3.5 h-3.5" />
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 text-[9px] font-mono uppercase tracking-widest">
+      <span className="text-red-400">Drop?</span>
+      <button onClick={onConfirm} className="text-red-400 hover:text-red-300 font-bold">Confirm</button>
+      <button onClick={onCancel} className="text-white/40 hover:text-white/70">Cancel</button>
+    </div>
+  );
+}
+
+function DatabasesPanel() {
+  const [databases, setDatabases] = useState<DbSummary[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [newName, setNewName]     = useState("");
+  const [busy, setBusy]           = useState(false);
+  const [msg, setMsg]             = useState("");
+  const [armedDrop, setArmedDrop] = useState<string | null>(null);
+
+  const [grantTarget, setGrantTarget] = useState("");
+  const [grantKind, setGrantKind]     = useState<"uid" | "group">("uid");
+  const [grantUid, setGrantUid]       = useState("");
+  const [grantGroup, setGrantGroup]   = useState("");
+  const [grantMask, setGrantMask]     = useState(1);
+  const [grantBusy, setGrantBusy]     = useState(false);
+
+  const [checkDb, setCheckDb]         = useState("");
+  const [checkUid, setCheckUid]       = useState("");
+  const [checkMask, setCheckMask]     = useState(1);
+  const [checkResult, setCheckResult] = useState<{ ok: boolean; output: string } | null>(null);
+  const [checkBusy, setCheckBusy]     = useState(false);
+
+  const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 5000); };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await kFetch("/api/security/databases");
+      const list: DbSummary[] = d?.databases || [];
+      setDatabases(list);
+      setGrantTarget(prev => prev || (list[0]?.name ?? ""));
+      setCheckDb(prev => prev || (list[0]?.name ?? ""));
+    } catch (_) { setDatabases([]); }
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const handleCreate = async () => {
+    const name = newName.trim();
+    if (!name) { flash("✖ database name required"); return; }
+    setBusy(true);
+    const r = await shellExec(`database create ${name}`);
+    flash(r.output.trim() || (r.ok ? `✔ database '${name}' created` : "✖ create failed"));
+    setNewName("");
+    setBusy(false);
+    load();
+  };
+
+  const handleDrop = async (name: string) => {
+    const r = await shellExec(`database drop ${name}`);
+    flash(r.output.trim() || (r.ok ? `✔ database '${name}' dropped` : "✖ drop failed"));
+    setArmedDrop(null);
+    load();
+  };
+
+  const handleGrant = async () => {
+    if (!grantTarget) { flash("✖ pick a database to grant on"); return; }
+    if (grantKind === "uid" && !grantUid.trim())     { flash("✖ uid required"); return; }
+    if (grantKind === "group" && !grantGroup.trim()) { flash("✖ group name required"); return; }
+    setGrantBusy(true);
+    const cmd = grantKind === "uid"
+      ? `database grant uid ${grantTarget} ${grantUid.trim()} ${grantMask}`
+      : `database grant group ${grantTarget} ${grantGroup.trim()} ${grantMask}`;
+    const r = await shellExec(cmd);
+    flash(r.output.trim() || (r.ok ? "✔ grant applied" : "✖ grant failed"));
+    setGrantBusy(false);
+    load();
+  };
+
+  const handleCheck = async () => {
+    if (!checkDb || !checkUid.trim()) { flash("✖ database and uid required"); return; }
+    setCheckBusy(true);
+    const r = await shellExec(`database check ${checkDb} ${checkUid.trim()} ${checkMask}`);
+    setCheckResult(r);
+    setCheckBusy(false);
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">
+          {databases.length} Database{databases.length !== 1 ? "s" : ""}
+        </span>
+        <button onClick={load} className="flex items-center gap-1.5 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors">
+          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Refresh
+        </button>
+      </div>
+
+      <p className="text-[9px] font-mono text-white/30 leading-relaxed">
+        Databases are permission/organizational tags applied to tables (Database Namespace &amp; Access Roadmap
+        Phases 1-4) — grants below control which uids or groups can read, write, or execute against every table
+        tagged with a given database. Create/drop/grant/check run through the kernel's shell dispatcher (no
+        dedicated JSON route exists yet, matching current group/authlist parity), so results echo the kernel's
+        own printed output verbatim.
+      </p>
+
+      {msg && <div className="bg-[#0d1117] border border-white/10 px-4 py-2 text-[11px] font-mono text-white/70 whitespace-pre-wrap">{msg}</div>}
+
+      <div className="border border-white/10 bg-[#0B0E14]">
+        {loading ? (
+          <p className="text-white/30 font-mono text-xs px-5 py-6 text-center">Loading…</p>
+        ) : databases.length === 0 ? (
+          <p className="text-white/30 font-mono text-xs px-5 py-6 text-center">No databases yet. Create one below.</p>
+        ) : (
+          <table className="w-full text-[11px] font-mono">
+            <thead>
+              <tr className="border-b border-white/10 text-white/40 text-[9px] uppercase tracking-widest">
+                <th className="text-left px-5 py-2.5">Name</th>
+                <th className="text-left px-5 py-2.5">ID</th>
+                <th className="text-left px-5 py-2.5">Owner UID</th>
+                <th className="text-left px-5 py-2.5">Grantee UIDs</th>
+                <th className="text-left px-5 py-2.5">Grantee Groups</th>
+                <th className="text-left px-5 py-2.5">Grant Mask</th>
+                <th className="text-right px-5 py-2.5">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {databases.map(d => (
+                <tr key={d.name} className="border-b border-white/5 hover:bg-white/3 transition-colors">
+                  <td className="px-5 py-2.5 text-white font-semibold">{d.name}</td>
+                  <td className="px-5 py-2.5 text-white/40">{d.database_id}</td>
+                  <td className="px-5 py-2.5 text-white/60">{d.owner_uid}</td>
+                  <td className="px-5 py-2.5 text-purple-400/80">{d.grantee_uid_count}</td>
+                  <td className="px-5 py-2.5 text-purple-400/80">{d.grantee_group_count}</td>
+                  <td className="px-5 py-2.5 text-white/40">{d.grant_perm_mask}</td>
+                  <td className="px-5 py-2.5 text-right">
+                    <div className="flex justify-end">
+                      <ConfirmDropButton
+                        armed={armedDrop === d.name}
+                        onArm={() => setArmedDrop(d.name)}
+                        onConfirm={() => handleDrop(d.name)}
+                        onCancel={() => setArmedDrop(null)}
+                        label={d.name}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-5">
+        <div className="border border-white/10 bg-[#0B0E14] p-5 space-y-3">
+          <span className="text-[9px] font-mono tracking-widest uppercase text-cyan-400 flex items-center gap-1.5">
+            <Plus className="w-3.5 h-3.5" /> Create Database
+          </span>
+          <div className="space-y-1">
+            <label className={dbLabelCls}>Name</label>
+            <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="sales_2024" className={dbInputCls} />
+          </div>
+          <button
+            onClick={handleCreate} disabled={busy}
+            className="w-full bg-cyan-400 text-[#0B0E14] font-mono text-[10px] font-bold uppercase tracking-widest py-2.5 hover:bg-cyan-300 transition-colors disabled:opacity-40"
+          >
+            {busy ? "Creating…" : "Create Database"}
+          </button>
+        </div>
+
+        <div className="border border-white/10 bg-[#0B0E14] p-5 space-y-3">
+          <span className="text-[9px] font-mono tracking-widest uppercase text-cyan-400 flex items-center gap-1.5">
+            <Lock className="w-3.5 h-3.5" /> Grant Access
+          </span>
+          <div className="space-y-1">
+            <label className={dbLabelCls}>Database</label>
+            <select value={grantTarget} onChange={e => setGrantTarget(e.target.value)} className={dbInputCls}>
+              {databases.length === 0 && <option value="">— no databases —</option>}
+              {databases.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+            </select>
+          </div>
+          <div className="flex gap-3 text-[10px] font-mono text-white/60 uppercase tracking-widest">
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" checked={grantKind === "uid"} onChange={() => setGrantKind("uid")} className="accent-cyan-400" /> UID
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" checked={grantKind === "group"} onChange={() => setGrantKind("group")} className="accent-cyan-400" /> Group
+            </label>
+          </div>
+          {grantKind === "uid" ? (
+            <div className="space-y-1">
+              <label className={dbLabelCls}>UID</label>
+              <input value={grantUid} onChange={e => setGrantUid(e.target.value)} placeholder="5000" className={dbInputCls} />
+            </div>
+          ) : (
+            <div className="space-y-1">
+              <label className={dbLabelCls}>Group name</label>
+              <input value={grantGroup} onChange={e => setGrantGroup(e.target.value)} placeholder="analysts" className={dbInputCls} />
+            </div>
+          )}
+          <div className="space-y-1">
+            <label className={dbLabelCls}>Permissions</label>
+            <DbPermPicker mask={grantMask} onChange={setGrantMask} />
+          </div>
+          <button
+            onClick={handleGrant} disabled={grantBusy}
+            className="w-full bg-cyan-400 text-[#0B0E14] font-mono text-[10px] font-bold uppercase tracking-widest py-2.5 hover:bg-cyan-300 transition-colors disabled:opacity-40"
+          >
+            {grantBusy ? "Granting…" : "Grant Access"}
+          </button>
+        </div>
+      </div>
+
+      <div className="border border-white/10 bg-[#0B0E14] p-5 space-y-3">
+        <span className="text-[9px] font-mono tracking-widest uppercase text-cyan-400 flex items-center gap-1.5">
+          <ShieldCheck className="w-3.5 h-3.5" /> Check Access
+        </span>
+        <div className="flex gap-2">
+          <div className="flex-1 min-w-0 space-y-1">
+            <label className={dbLabelCls}>Database</label>
+            <select value={checkDb} onChange={e => setCheckDb(e.target.value)} className={dbInputCls}>
+              {databases.length === 0 && <option value="">— no databases —</option>}
+              {databases.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+            </select>
+          </div>
+          <div className="w-28 space-y-1">
+            <label className={dbLabelCls}>UID</label>
+            <input value={checkUid} onChange={e => setCheckUid(e.target.value)} placeholder="5000" className={dbInputCls} />
+          </div>
+        </div>
+        <DbPermPicker mask={checkMask} onChange={setCheckMask} />
+        <button
+          onClick={handleCheck} disabled={checkBusy}
+          className="bg-white/10 text-white font-mono text-[10px] font-bold uppercase tracking-widest px-4 py-2 hover:bg-white/20 transition-colors disabled:opacity-40"
+        >
+          {checkBusy ? "Checking…" : "Run Check"}
+        </button>
+        {checkResult && (
+          <pre className={`text-[10px] font-mono px-3 py-2 border whitespace-pre-wrap ${
+            checkResult.ok ? "border-white/10 bg-white/3 text-white/70" : "border-red-400/20 bg-red-400/5 text-red-300/80"
+          }`}>{checkResult.output || (checkResult.ok ? "(no output)" : "command not recognized")}</pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN CONTAINER
 // ─────────────────────────────────────────────────────────────────────────────
 const DB_TABS: { key: DbTab; label: string; icon: React.ReactNode }[] = [
@@ -1622,6 +1951,7 @@ const DB_TABS: { key: DbTab; label: string; icon: React.ReactNode }[] = [
   { key: "mqt",       label: "MQT Dashboard",      icon: <BarChart3 className="w-3.5 h-3.5" /> },
   { key: "programs",  label: "Program Manager",    icon: <Upload    className="w-3.5 h-3.5" /> },
   { key: "streams",   label: "Stream Library",     icon: <FileText  className="w-3.5 h-3.5" /> },
+  { key: "databases", label: "Databases",          icon: <Lock      className="w-3.5 h-3.5" /> },
 ];
 
 export default function SlsDbEngine({ objects, activeUser }: SlsDbEngineProps) {
