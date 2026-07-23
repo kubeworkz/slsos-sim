@@ -198,13 +198,21 @@ register({
   },
 });
 register({
-  name: "valloc", usage: "valloc <name> <TYPE|type_int> <pages>",
+  name: "valloc", usage: "valloc <name> <TYPE|type_int> <pages> [database]",
   handler: async (rest) => {
-    const [name, type, pages] = words(rest);
-    if (!name || !type || !pages) return err("usage: valloc <name> <TYPE|type_int> <pages>");
+    const [name, type, pages, database] = words(rest);
+    if (!name || !type || !pages) return err("usage: valloc <name> <TYPE|type_int> <pages> [database]");
     const typeNum = resolveObjType(type);
     if (typeNum === null) return err(`unknown type '${type}' -- try one of: ${Object.keys(OBJ_TYPES).join(", ")}, or a raw integer`);
-    const d = await postJSON("/api/valloc", { name, type: typeNum, pages: parseInt(pages, 10) || 0 });
+    // VectorStore Gap Analysis §3: optional trailing database name tags the
+    // new object's database_id at creation time -- the same catalog object
+    // a "vec collection create" promotes, so tagging it here means
+    // catalog_check_access()'s existing database-scoped grant check already
+    // covers the resulting vector collection, no VectorStore-specific code
+    // needed.
+    const body: Record<string, unknown> = { name, type: typeNum, pages: parseInt(pages, 10) || 0 };
+    if (database) body.database = database;
+    const d = await postJSON("/api/valloc", body);
     if (!isOk(d)) return err(errOf(d) || "valloc failed");
     return ok(`allocated '${name}' — object_id=${d.object_id}`);
   },
@@ -790,6 +798,22 @@ register({
     const d = await postJSON("/api/vec/collections/unique", { name, enabled });
     if (!isOk(d)) return err(errOf(d) || "vec collection unique failed");
     return ok(`collection '${name}' external_id uniqueness -> ${enabled ? "ON" : "OFF"}`);
+  },
+});
+register({
+  // VectorStore Gap Analysis §3: generic retag reaching any catalog
+  // object, including an already-promoted vector collection (which has no
+  // ALTER verb of its own but shares object_catalog[] with SQL tables).
+  // "none" clears the tag back to unassigned.
+  name: "object set database", usage: "object set database <name> <database|none>",
+  handler: async (rest) => {
+    const [name, database] = words(rest);
+    if (!name || !database) return err("usage: object set database <name> <database|none>");
+    const body: Record<string, unknown> = { name };
+    if (database.toLowerCase() !== "none") body.database = database;
+    const d = await postJSON("/api/objects/database", body);
+    if (!isOk(d)) return err(errOf(d) || "object set database failed");
+    return ok(`object '${name}' database -> ${d.database ?? "(none)"}`);
   },
 });
 register({

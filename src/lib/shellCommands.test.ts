@@ -78,6 +78,11 @@ async function main() {
   eq("valloc: method", lastCall().method, "POST");
   eq("valloc: body", lastCall().body, { name: "foo", type: 1, pages: 2 });
 
+  // VectorStore Gap Analysis §3: optional trailing database name
+  calls = []; mockNext({ ok: "true", object_id: "0xdead" });
+  await runCommand("valloc foo DB_TABLE 2 sales");
+  eq("valloc+database: body", lastCall().body, { name: "foo", type: 1, pages: 2, database: "sales" });
+
   calls = []; mockNext({ objects: [{ name: "foo", type: 1, tier: 0, pages: 2, uid: 1 }] });
   const lsRes = await runCommand("ls");
   eq("ls: path", lastCall().url, "/api/objects");
@@ -257,6 +262,23 @@ async function main() {
   check("vec collection unique: kernel-reported failure -> isError true", vecUniqueErr.isError === true, vecUniqueErr.text);
 
   check("isDestructive: vec collection unique (reversible toggle, not data-loss)", isDestructive("vec collection unique coll1 on") === false);
+
+  // VectorStore Gap Analysis §3: object set database <name> <database|none>
+  calls = []; mockNext({ ok: "true", name: "coll1", database: "sales", status: 0 });
+  await runCommand("object set database coll1 sales");
+  eq("object set database: path", lastCall().url, "/api/objects/database");
+  eq("object set database: method", lastCall().method, "POST");
+  eq("object set database: body", lastCall().body, { name: "coll1", database: "sales" });
+
+  calls = []; mockNext({ ok: "true", name: "coll1", database: "(none)", status: 0 });
+  await runCommand("object set database coll1 none");
+  eq("object set database none: body", lastCall().body, { name: "coll1" });
+
+  calls = []; mockNext({ ok: "false", status: 3 });
+  const setDbErr = await runCommand("object set database coll1 nosuchdb");
+  check("object set database: kernel-reported failure -> isError true", setDbErr.isError === true, setDbErr.text);
+
+  check("isDestructive: object set database (reversible retag, not data-loss)", isDestructive("object set database coll1 sales") === false);
 
   calls = []; mockNext({ ok: "true" });
   await runCommand("vec index drop idx1");
