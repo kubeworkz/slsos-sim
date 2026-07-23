@@ -96,6 +96,25 @@ function CollectionsPanel() {
   const [schemaMsg, setSchemaMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
 
+  // ── VectorStore Interface Roadmap Phase 6 follow-on: bulk vector DATA
+  // export/import (the embeddings themselves, not just the COLLECTION/
+  // INDEX definitions the pair above handles). Backend has been complete
+  // and host-tested since Phase 6 (vec_data_export()/vec_data_import(),
+  // GET /api/vec/data/export/<collection>, POST /api/vec/data/import) --
+  // this closes the one gap the VectorStore Gap Analysis doc named as
+  // most actionable: the buttons were never added here. Export is scoped
+  // to ONE collection per call (unlike schema export's "every readable
+  // collection at once" -- see vec_data_export()'s own header comment on
+  // why: vector data volume is vastly larger than DDL-sized definitions),
+  // so this is a per-row action keyed by collection name, not a single
+  // header button. Import stays a single header button, same shape as
+  // schema import, since a VECTOR line names its own target collection
+  // and a dump can cover more than one.
+  const [exportingData, setExportingData] = useState<string | null>(null);
+  const [importingData, setImportingData] = useState(false);
+  const [dataMsg, setDataMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const dataImportFileRef = useRef<HTMLInputElement>(null);
+
   const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 4000); };
 
   const load = useCallback(async () => {
@@ -158,6 +177,103 @@ function CollectionsPanel() {
     }
     setImportingSchema(false);
     if (importFileRef.current) importFileRef.current.value = "";
+  }, [load]);
+
+  // VectorStore Gap Analysis §1.4 (closed): vec_data_export()'s buffer is
+  // genuinely tight at real embedding dimensions, so one call may return
+  // only a handful of vectors -- occasionally zero -- for a large
+  // collection. This now loops, following GET .../skip/<N> (§1.4's own new
+  // path segment) with skip advanced by each call's own vectors_written,
+  // until entries_remaining hits 0, then downloads everything as ONE
+  // combined file rather than silently handing the user a partial export.
+  // MAX_PAGES is a safety cap against a runaway loop (e.g. a server bug
+  // that reports entries_remaining > 0 forever) -- not expected to bite in
+  // practice, named honestly rather than looping unbounded.
+  const handleExportData = useCallback(async (name: string) => {
+    setExportingData(name);
+    setDataMsg(null);
+    const MAX_PAGES = 500;
+    try {
+      const lines: string[] = [];
+      let skip = 0;
+      let totalWritten = 0;
+      let total = 0;
+      let remaining = 0;
+      let pages = 0;
+      for (;;) {
+        const path = skip > 0
+          ? `/api/vec/data/export/${encodeURIComponent(name)}/skip/${skip}`
+          : `/api/vec/data/export/${encodeURIComponent(name)}`;
+        const data = await kFetch(path);
+        const text: string = data?.text || "";
+        const written = data?.vectors_written ?? 0;
+        total = data?.vectors_total ?? total;
+        remaining = data?.entries_remaining ?? 0;
+        totalWritten += written;
+        pages++;
+        // Every page after the first repeats the "# vector-store data
+        // export ..." header comment (vec_data_export() has no notion of
+        // "which page" -- it just answers "starting from skip_count,
+        // what's next") -- strip it before concatenating so the combined
+        // file has exactly one header, not one per page.
+        const bodyLines = text.split("\n").filter(l => !(pages > 1 && l.startsWith("#")));
+        lines.push(...bodyLines);
+        if (remaining <= 0 || written === 0 || pages >= MAX_PAGES) break;
+        skip += written;
+      }
+      const combinedText = lines.join("\n").replace(/\n+$/, "\n");
+      if (totalWritten === 0) {
+        setDataMsg({ ok: false, text: `'${name}' has no vectors to export.` });
+      } else {
+        const blob = new Blob([combinedText], { type: "text/plain;charset=utf-8" });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        a.href = url; a.download = `aerosls_vector_data_${name}_${stamp}.txt`; a.click();
+        URL.revokeObjectURL(url);
+        setDataMsg({
+          ok: true,
+          text: `Exported ${totalWritten}/${total} vector(s) from '${name}'` +
+                (pages > 1 ? ` across ${pages} page(s)` : "") +
+                ` (${combinedText.length} bytes)` +
+                (remaining > 0 ? ` — stopped after ${pages} page(s) (safety cap); ${remaining} vector(s) still remain` : ""),
+        });
+      }
+    } catch (e: any) {
+      setDataMsg({ ok: false, text: e?.message || "export failed" });
+    }
+    setExportingData(null);
+  }, []);
+
+  const handleImportDataClick = () => dataImportFileRef.current?.click();
+
+  const handleImportDataFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportingData(true);
+    setDataMsg(null);
+    try {
+      const text = await file.text();
+      const data = await kFetch("/api/vec/data/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const lines: { ok: string; error?: string }[] = data?.lines || [];
+      const firstError = lines.find(l => l.ok !== "true")?.error;
+      const failed = Number(data?.failed ?? 0);
+      setDataMsg({
+        ok: failed === 0,
+        text: `${data?.succeeded ?? 0}/${data?.total ?? 0} vector(s) succeeded` +
+              (failed ? `, ${failed} failed${firstError ? ` (${firstError})` : ""}` : "") +
+              (data?.truncated === "true" ? " — import truncated" : ""),
+      });
+      load();
+    } catch (err: any) {
+      setDataMsg({ ok: false, text: err?.message || "import failed" });
+    }
+    setImportingData(false);
+    if (dataImportFileRef.current) dataImportFileRef.current.value = "";
   }, [load]);
 
   // Collections require an already-existing catalog object
@@ -237,6 +353,22 @@ function CollectionsPanel() {
           >
             <Download className="w-3 h-3" /> {exportingSchema ? "Exporting…" : "Export Collections"}
           </button>
+          <span className="w-px h-3 bg-white/10" />
+          <input
+            ref={dataImportFileRef}
+            type="file"
+            accept=".txt"
+            className="hidden"
+            onChange={handleImportDataFile}
+          />
+          <button
+            onClick={handleImportDataClick}
+            disabled={importingData}
+            title="Import a bulk VECTOR data dump (external_id + values) — import schema first if restoring both"
+            className="flex items-center gap-1.5 text-white/40 hover:text-purple-400 transition-colors font-mono text-[9px] uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Upload className="w-3 h-3" /> {importingData ? "Importing…" : "Import Data"}
+          </button>
           <button onClick={load} className="flex items-center gap-1.5 text-[10px] font-mono text-white/40 hover:text-white/70 transition-colors">
             <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Refresh
           </button>
@@ -250,9 +382,22 @@ function CollectionsPanel() {
           {schemaMsg.text}
         </div>
       )}
+      {dataMsg && (
+        <div className={`text-[10px] font-mono px-3 py-2 border ${
+          dataMsg.ok ? "border-green-400/20 bg-green-400/5 text-green-300/80" : "border-red-400/20 bg-red-400/5 text-red-300/80"
+        }`}>
+          {dataMsg.text}
+        </div>
+      )}
       <p className="text-[9px] font-mono text-white/30 leading-relaxed">
-        Export/Import cover collection and index <span className="text-cyan-400">definitions</span> only (name,
-        dimension, index metric) — not the vector data itself. Import schema before data if restoring both.
+        <span className="text-cyan-400">Export/Import Collections</span> cover collection and index definitions
+        only (name, dimension, index metric) — not the vector data itself.{" "}
+        <span className="text-purple-400">Export Data</span> (per-row, below) and{" "}
+        <span className="text-purple-400">Import Data</span> (above) cover the actual vectors
+        (<code>external_id</code> + values) for one collection at a time. Import schema before data if restoring
+        both. Data export is capped by a fixed buffer size, so a large collection at real embedding dimensions
+        may only export a partial batch per click — the export message reports how many of the collection's
+        vectors actually made it into the file.
       </p>
 
       {msg && <div className="bg-[#0d1117] border border-white/10 px-4 py-2 text-[11px] font-mono text-white/70">{msg}</div>}
@@ -281,7 +426,15 @@ function CollectionsPanel() {
                   <td className="px-5 py-2.5 text-white/60">{c.entry_count}</td>
                   <td className="px-5 py-2.5 text-white/40">{c.page_count}</td>
                   <td className="px-5 py-2.5 text-right">
-                    <div className="flex justify-end">
+                    <div className="flex justify-end items-center gap-3">
+                      <button
+                        onClick={() => handleExportData(c.name)}
+                        disabled={exportingData === c.name}
+                        title={`Export '${c.name}'s vector data (external_id + values)`}
+                        className="flex items-center gap-1 text-white/30 hover:text-purple-400 transition-colors text-[9px] font-mono uppercase tracking-widest disabled:opacity-40"
+                      >
+                        <Download className="w-3 h-3" /> {exportingData === c.name ? "Exporting…" : "Data"}
+                      </button>
                       <ConfirmDeleteButton
                         armed={armedDelete === c.name}
                         onArm={() => setArmedDelete(c.name)}

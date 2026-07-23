@@ -14,6 +14,21 @@
  * commands, a sample of the formerly-legacy commands promoted to real JSON
  * routes by the Shell-Command JSON-Promotion Roadmap, and isDestructive().
  *
+ * VectorStore Gap Analysis §2 follow-on: a consolidated pass covering every
+ * vec* command that had shipped with zero executed test until now -- each
+ * prior VectorStore roadmap phase added its own new command(s) and named
+ * its own missing test as an individually small, acceptable limit, but
+ * across five phases that compounded into 13 of 15 vec* commands (all but
+ * "vec insert"/"vec embed-insert" above) having no coverage at all. Closes
+ * that, in one pass, below. Named honestly rather than silently
+ * discovered: "vec schema export/import" and "vec data export/import" are
+ * NOT among the 13 -- grepping this file confirms those four never got a
+ * shellCommands.ts command at all, only a kernel-native user/shell.c one
+ * (the VectorStore tab's own Export/Import buttons reach the same HTTP
+ * routes directly, without going through this router) -- adding new
+ * commands is out of scope for a test-coverage pass, so that gap is
+ * recorded here, not silently fixed as a side effect.
+ *
  * Run (no test framework needed, just tsc's own JS emitter + node):
  *   tsc --module commonjs --target es2020 --esModuleInterop --skipLibCheck \
  *       --outDir /tmp/build src/lib/shellCommands.ts src/lib/apiFetch.ts \
@@ -135,6 +150,125 @@ async function main() {
     collection: "coll1", external_id: 7, prompt: "hello there world",
     endpoint_ip: "127.0.0.1", port: 11434, model: "nomic-embed-text",
   });
+
+  // ── Vector store, consolidated pass: the 13 previously-untested vec*
+  // commands (VectorStore Gap Analysis §2) ───────────────────────────────
+  calls = []; mockNext({ ok: "true" });
+  await runCommand("vec create coll2 128");
+  eq("vec create: path", lastCall().url, "/api/vec/collections");
+  eq("vec create: method", lastCall().method, "POST");
+  eq("vec create: body", lastCall().body, { name: "coll2", dimension: 128 });
+
+  calls = []; mockNext({ collections: [{ name: "coll1", dimension: 3, entry_count: 2, page_count: 1 }] });
+  const vecListRes = await runCommand("vec list");
+  eq("vec list: path", lastCall().url, "/api/vec/collections");
+  eq("vec list: method", lastCall().method, "GET");
+  check("vec list: renders collection name", vecListRes.text.includes("coll1"), vecListRes.text);
+
+  calls = []; mockNext({ matches: [{ external_id: 7, page_id: 1, slot_index: 2, distance: 0.05 }] });
+  const vecSearchRes = await runCommand("vec search coll1 1.0,2.0,3.0 metric=l2 k=5");
+  eq("vec search: path", lastCall().url, "/api/vec/search");
+  eq("vec search: body", lastCall().body, { collection: "coll1", query: [1, 2, 3], metric: "l2", k: 5 });
+  check("vec search: renders a match", vecSearchRes.text.includes("7"), vecSearchRes.text);
+
+  calls = []; mockNext({ matches: [] });
+  await runCommand("vec search-text coll1 metric=l2 k=3 prompt=what is this about");
+  eq("vec search-text: path", lastCall().url, "/api/vec/embed-search");
+  eq("vec search-text: body", lastCall().body, {
+    collection: "coll1", prompt: "what is this about",
+    endpoint_ip: "127.0.0.1", port: 11434, model: "nomic-embed-text", metric: "l2", k: 3,
+  });
+
+  calls = []; mockNext({ ok: "false", error: "ollama unreachable", ollama_status: -1 });
+  const vecSearchTextErr = await runCommand("vec search-text coll1 prompt=hello");
+  check("vec search-text: embed failure surfaces ollama_status, not a generic error",
+    vecSearchTextErr.isError === true && vecSearchTextErr.text.includes("ollama unreachable") && vecSearchTextErr.text.includes("ollama_status=-1"),
+    vecSearchTextErr.text);
+
+  calls = []; mockNext({ results: [{ external_id: 7, row: ["a", "b"] }] });
+  const vecJoinRes = await runCommand('vec join mytable id [{"external_id":7,"page_id":1,"slot_index":2}]');
+  eq("vec join: path", lastCall().url, "/api/vec/join");
+  eq("vec join: body", lastCall().body, { table: "mytable", id_column: "id", matches: [{ external_id: 7, page_id: 1, slot_index: 2 }] });
+  check("vec join: renders joined row", vecJoinRes.text.includes("a, b"), vecJoinRes.text);
+
+  calls = []; mockNext({ ok: "true" });
+  await runCommand("vec index create idx1 coll1 metric=l2");
+  eq("vec index create: path", lastCall().url, "/api/vec/indexes");
+  eq("vec index create: body", lastCall().body, { name: "idx1", collection: "coll1", metric: "l2" });
+
+  calls = []; mockNext({ indexes: [{ name: "idx1", collection: "coll1", metric: "cosine", active_count: 5, node_count: 5 }] });
+  const vecIdxListRes = await runCommand("vec index list");
+  eq("vec index list: path", lastCall().url, "/api/vec/indexes");
+  eq("vec index list: method", lastCall().method, "GET");
+  check("vec index list: renders index name", vecIdxListRes.text.includes("idx1"), vecIdxListRes.text);
+
+  calls = []; mockNext({ matches: [{ external_id: 9, page_id: 2, slot_index: 0, distance: 0.02 }] });
+  await runCommand("vec index search idx1 1.0,2.0 k=4 ef=20");
+  eq("vec index search: path", lastCall().url, "/api/vec/index/search");
+  eq("vec index search: body", lastCall().body, { index: "idx1", query: [1, 2], k: 4, ef: 20 });
+
+  calls = []; mockNext({ matches: [] });
+  await runCommand("vec index search idx1 1.0,2.0 k=4");
+  eq("vec index search: ef defaults to k when omitted", lastCall().body, { index: "idx1", query: [1, 2], k: 4, ef: 4 });
+
+  calls = []; mockNext({ matches: [] });
+  await runCommand("vec index search-text idx1 k=6 prompt=hello world");
+  eq("vec index search-text: path", lastCall().url, "/api/vec/index/embed-search");
+  eq("vec index search-text: body", lastCall().body, {
+    index: "idx1", prompt: "hello world",
+    endpoint_ip: "127.0.0.1", port: 11434, model: "nomic-embed-text", k: 6, ef: 6,
+  });
+
+  calls = []; mockNext({ ok: "true" });
+  await runCommand("vec index rebuild idx1");
+  eq("vec index rebuild: path", lastCall().url, "/api/vec/index/rebuild");
+  eq("vec index rebuild: method", lastCall().method, "POST");
+  eq("vec index rebuild: body", lastCall().body, { index: "idx1" });
+
+  calls = []; mockNext({ ok: "true" });
+  await runCommand("vec delete coll1 4 2");
+  eq("vec delete: path", lastCall().url, "/api/vec/vector");
+  eq("vec delete: method", lastCall().method, "DELETE");
+  eq("vec delete: body", lastCall().body, { collection: "coll1", page_id: 4, slot_index: 2 });
+
+  calls = []; mockNext({ ok: "false", error: "no such vector" });
+  const vecDeleteErr = await runCommand("vec delete coll1 99 99");
+  check("vec delete: kernel-reported failure -> isError true", vecDeleteErr.isError === true && vecDeleteErr.text.includes("no such vector"), vecDeleteErr.text);
+
+  calls = []; mockNext({ ok: "true" });
+  await runCommand("vec collection drop coll1");
+  eq("vec collection drop: path", lastCall().url, "/api/vec/collections");
+  eq("vec collection drop: method", lastCall().method, "DELETE");
+  eq("vec collection drop: body", lastCall().body, { name: "coll1" });
+
+  // ── VectorStore Gap Analysis §1.3: opt-in external_id uniqueness ────────
+  calls = []; mockNext({ ok: "true", name: "coll1", enabled: "true", status: 0 });
+  await runCommand("vec collection unique coll1 on");
+  eq("vec collection unique on: path", lastCall().url, "/api/vec/collections/unique");
+  eq("vec collection unique on: method", lastCall().method, "POST");
+  eq("vec collection unique on: body", lastCall().body, { name: "coll1", enabled: 1 });
+
+  calls = []; mockNext({ ok: "true", name: "coll1", enabled: "false", status: 0 });
+  await runCommand("vec collection unique coll1 off");
+  eq("vec collection unique off: body", lastCall().body, { name: "coll1", enabled: 0 });
+
+  calls = []; mockNext({ ok: "false", status: 2 });
+  const vecUniqueErr = await runCommand("vec collection unique coll1 on");
+  check("vec collection unique: kernel-reported failure -> isError true", vecUniqueErr.isError === true, vecUniqueErr.text);
+
+  check("isDestructive: vec collection unique (reversible toggle, not data-loss)", isDestructive("vec collection unique coll1 on") === false);
+
+  calls = []; mockNext({ ok: "true" });
+  await runCommand("vec index drop idx1");
+  eq("vec index drop: path", lastCall().url, "/api/vec/indexes");
+  eq("vec index drop: method", lastCall().method, "DELETE");
+  eq("vec index drop: body", lastCall().body, { name: "idx1" });
+
+  check("isDestructive: vec delete", isDestructive("vec delete coll1 4 2") === true);
+  check("isDestructive: vec collection drop", isDestructive("vec collection drop coll1") === true);
+  check("isDestructive: vec index drop", isDestructive("vec index drop idx1") === true);
+  check("isDestructive: vec index rebuild (repair, not data-loss)", isDestructive("vec index rebuild idx1") === false);
+  check("isDestructive: vec search (read-only)", isDestructive("vec search coll1 1.0,2.0") === false);
 
   // ── Partitions / agents / workflows ────────────────────────────────────
   calls = []; mockNext({ ok: "true", partition_id: 4 });

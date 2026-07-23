@@ -778,6 +778,21 @@ register({
   },
 });
 register({
+  // VectorStore Gap Analysis §1.3: opt-in external_id uniqueness. Not
+  // destructive -- toggling never deletes or scans existing data, only
+  // changes what happens on the NEXT insert (matches vecstore_set_unique_
+  // external_id()'s own kernel-side doc comment).
+  name: "vec collection unique", usage: "vec collection unique <name> <on|off>",
+  handler: async (rest) => {
+    const [name, onoff] = words(rest);
+    if (!name || !onoff) return err("usage: vec collection unique <name> <on|off>");
+    const enabled = onoff.toLowerCase() === "on" ? 1 : 0;
+    const d = await postJSON("/api/vec/collections/unique", { name, enabled });
+    if (!isOk(d)) return err(errOf(d) || "vec collection unique failed");
+    return ok(`collection '${name}' external_id uniqueness -> ${enabled ? "ON" : "OFF"}`);
+  },
+});
+register({
   name: "vec index drop", usage: "vec index drop <name>", destructive: true,
   handler: async (rest) => {
     const [name] = words(rest);
