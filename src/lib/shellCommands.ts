@@ -335,6 +335,21 @@ register({
     return { text: fmtTable(rows, ["tier", "name", "accesses", "idle"]) };
   },
 });
+// Navigator-Parity Gap Roadmap Phase 5b/5c + Storage Isolation Roadmap
+// Phase 2: system-wide capacity/tier totals plus (Phase 2) a per-partition
+// on-disk byte usage/quota breakdown, sourced from the same real counters
+// "partition storagequotas" reads (in pages) but reported here in bytes.
+register({
+  name: "disk status", usage: "disk status",
+  handler: async () => {
+    const d = await getJSON("/api/disk");
+    if (errOf(d)) return err(errOf(d)!);
+    const tierRows = Object.entries(d?.tiers || {}).map(([tier, o]: [string, any]) => ({ tier, ...o }));
+    const tierText = fmtTable(tierRows, ["tier", "bytes_used", "object_count"]);
+    const partText = fmtTable(d?.partitions, ["partition_id", "disk_bytes_used", "disk_bytes_quota"]);
+    return { text: `capacity_bytes: ${d?.capacity_bytes ?? "?"}\n\n${tierText}\n${partText}` };
+  },
+});
 
 // ─── Transactions ─────────────────────────────────────────────────────────────
 register({ name: "tx begin", usage: "tx begin", handler: async () => {
@@ -900,6 +915,76 @@ register({
   handler: async () => {
     const d = await getJSON("/api/partition/quotas");
     return { text: fmtTable(d?.quotas, ["partition_id", "usage", "quota", "unlimited"]) };
+  },
+});
+// Weighted CPU Scheduling (Multitenant Isolation Gap Analysis §5/§7 item 8):
+// mirrors "partition quota"/"partition quotas" exactly, just against the
+// CPU scheduler's weight pair instead of the RAM frame-quota pair.
+register({
+  name: "partition cpuweight", usage: "partition cpuweight <partition_id> <weight|0=default 1>",
+  handler: async (rest) => {
+    const [pid, weight] = words(rest);
+    if (!pid || !weight) return err("usage: partition cpuweight <partition_id> <weight|0=default 1>");
+    const d = await postJSON("/api/partition/cpuweight", { partition_id: parseInt(pid, 10), weight: parseInt(weight, 10) || 0 });
+    if (!isOk(d)) return err(errOf(d) || "partition cpuweight failed");
+    return ok(`partition ${pid} CPU weight set to ${weight}`);
+  },
+});
+register({
+  name: "partition cpuweights", usage: "partition cpuweights",
+  handler: async () => {
+    const d = await getJSON("/api/partition/cpuweights");
+    return { text: fmtTable(d?.cpuweights, ["partition_id", "weight"]) };
+  },
+});
+// Storage Isolation Roadmap Phase 1: per-partition on-disk page quota,
+// rowstore+vecstore combined (kernel/storage_quota.c) — same shape again.
+register({
+  name: "partition storagequota", usage: "partition storagequota <partition_id> <page_quota|0=unlimited>",
+  handler: async (rest) => {
+    const [pid, pages] = words(rest);
+    if (!pid || !pages) return err("usage: partition storagequota <partition_id> <page_quota|0=unlimited>");
+    const d = await postJSON("/api/partition/storagequota", { partition_id: parseInt(pid, 10), page_quota: parseInt(pages, 10) || 0 });
+    if (!isOk(d)) return err(errOf(d) || "partition storagequota failed");
+    return ok(`partition ${pid} on-disk page quota set to ${pages}`);
+  },
+});
+register({
+  name: "partition storagequotas", usage: "partition storagequotas",
+  handler: async () => {
+    const d = await getJSON("/api/partition/storagequotas");
+    return { text: fmtTable(d?.storagequotas, ["partition_id", "page_usage", "page_quota"]) };
+  },
+});
+// Multitenant Isolation Gap Analysis §5/§7 item 6: cumulative per-partition
+// usage metering (HTTP requests, frame ticks) plus a live frame-usage gauge.
+register({
+  name: "usage", usage: "usage",
+  handler: async () => {
+    const d = await getJSON("/api/usage");
+    if (errOf(d)) return err(errOf(d)!);
+    return { text: fmtTable(d?.partitions, ["partition_id", "name", "http_requests_total", "frame_ticks_total", "frames_now"]) };
+  },
+});
+
+// ─── Tenants ──────────────────────────────────────────────────────────────────
+// Multitenant Isolation Gap Analysis §5/§7 item 1: the identity unifying a
+// partition_id and a database_id under one named tenant.
+register({
+  name: "tenant create", usage: "tenant create <name>",
+  handler: async (rest) => {
+    const [name] = words(rest);
+    if (!name) return err("usage: tenant create <name>");
+    const d = await postJSON("/api/tenants", { name });
+    if (!isOk(d)) return err(errOf(d) || "tenant create failed");
+    return ok(`tenant '${name}' created — id=${d.tenant_id}`);
+  },
+});
+register({
+  name: "tenant list", usage: "tenant list",
+  handler: async () => {
+    const d = await getJSON("/api/tenants");
+    return { text: fmtTable(d?.tenants, ["id", "name", "partition_id", "database_id", "owner_uid"]) };
   },
 });
 

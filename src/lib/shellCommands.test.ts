@@ -298,6 +298,60 @@ async function main() {
   eq("partition create: path", lastCall().url, "/api/partitions");
   eq("partition create: method", lastCall().method, "POST");
 
+  // ── Weighted CPU scheduling / storage quotas / usage / tenants / disk --
+  // the multitenant-feature commands with no prior test coverage. ────────
+  calls = []; mockNext({ ok: "true" });
+  await runCommand("partition cpuweight 3 5");
+  eq("partition cpuweight: path", lastCall().url, "/api/partition/cpuweight");
+  eq("partition cpuweight: method", lastCall().method, "POST");
+  eq("partition cpuweight: body", lastCall().body, { partition_id: 3, weight: 5 });
+
+  calls = []; mockNext({ cpuweights: [{ partition_id: 3, weight: 5 }] });
+  const cpuweightsRes = await runCommand("partition cpuweights");
+  eq("partition cpuweights: path", lastCall().url, "/api/partition/cpuweights");
+  eq("partition cpuweights: method", lastCall().method, "GET");
+  check("partition cpuweights: renders table", cpuweightsRes.text.includes("5"), cpuweightsRes.text);
+
+  calls = []; mockNext({ ok: "true" });
+  await runCommand("partition storagequota 3 100");
+  eq("partition storagequota: path", lastCall().url, "/api/partition/storagequota");
+  eq("partition storagequota: method", lastCall().method, "POST");
+  eq("partition storagequota: body", lastCall().body, { partition_id: 3, page_quota: 100 });
+
+  calls = []; mockNext({ storagequotas: [{ partition_id: 3, page_usage: 10, page_quota: 100 }] });
+  const storagequotasRes = await runCommand("partition storagequotas");
+  eq("partition storagequotas: path", lastCall().url, "/api/partition/storagequotas");
+  check("partition storagequotas: renders table", storagequotasRes.text.includes("100"), storagequotasRes.text);
+
+  calls = []; mockNext({ partitions: [{ partition_id: 3, name: "p1", http_requests_total: 12, frame_ticks_total: 34, frames_now: 5 }] });
+  const usageRes = await runCommand("usage");
+  eq("usage: path", lastCall().url, "/api/usage");
+  eq("usage: method", lastCall().method, "GET");
+  check("usage: renders table", usageRes.text.includes("p1") && usageRes.text.includes("12"), usageRes.text);
+
+  calls = []; mockNext({ ok: "true", tenant_id: 9 });
+  const tenantCreateRes = await runCommand("tenant create acme");
+  eq("tenant create: path", lastCall().url, "/api/tenants");
+  eq("tenant create: method", lastCall().method, "POST");
+  eq("tenant create: body", lastCall().body, { name: "acme" });
+  check("tenant create: shows the new id", tenantCreateRes.text.includes("9"), tenantCreateRes.text);
+
+  calls = []; mockNext({ tenants: [{ id: 9, name: "acme", partition_id: 3, database_id: 1, owner_uid: 1 }] });
+  const tenantListRes = await runCommand("tenant list");
+  eq("tenant list: path", lastCall().url, "/api/tenants");
+  eq("tenant list: method", lastCall().method, "GET");
+  check("tenant list: renders table", tenantListRes.text.includes("acme"), tenantListRes.text);
+
+  calls = []; mockNext({
+    capacity_bytes: 1000000,
+    tiers: { l1_cache: { bytes_used: 100, object_count: 1 }, l2_dram: { bytes_used: 0, object_count: 0 }, l3_ssd: { bytes_used: 0, object_count: 0 } },
+    partitions: [{ partition_id: 3, disk_bytes_used: 4096, disk_bytes_quota: 409600 }],
+  });
+  const diskRes = await runCommand("disk status");
+  eq("disk status: path", lastCall().url, "/api/disk");
+  eq("disk status: method", lastCall().method, "GET");
+  check("disk status: shows capacity and tier/partition tables", diskRes.text.includes("1000000") && diskRes.text.includes("l1_cache") && diskRes.text.includes("4096"), diskRes.text);
+
   calls = []; mockNext({ ok: "true" });
   await runCommand("agent kill a1");
   eq("agent kill -> drop: path", lastCall().url, "/api/agent/drop");

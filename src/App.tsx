@@ -48,6 +48,7 @@ import SlsAgentManager from "./components/SlsAgentManager";
 import SlsWorkflowBuilder from "./components/SlsWorkflowBuilder";
 import SlsTerminal from "./components/SlsTerminal";
 import SlsVectorStore from "./components/SlsVectorStore";
+import SlsTenantPartitionManager from "./components/SlsTenantPartitionManager";
 
 import {
   Layers,
@@ -67,7 +68,8 @@ import {
   Bot,
   GitBranch,
   TerminalSquare,
-  Boxes
+  Boxes,
+  Users
 } from "lucide-react";
 
 const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
@@ -155,7 +157,7 @@ const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
 
 export default function App() {
   // Navigation tabs — start on "memory" if already logged in, else "portal"
-  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "coprocessor" | "dbengine" | "vectorstore" | "portal" | "agents" | "workflows" | "terminal">(() => {
+  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "tenants" | "coprocessor" | "dbengine" | "vectorstore" | "portal" | "agents" | "workflows" | "terminal">(() => {
     const saved = localStorage.getItem("sls_current_portal_user");
     return saved ? "memory" : "portal";
   });
@@ -1341,6 +1343,7 @@ export default function App() {
                   { key: "security",     label: "Protection Rings",  icon: <ShieldCheck className="w-3.5 h-3.5" /> },
                   { key: "transactions", label: "Transactional Log", icon: <Database    className="w-3.5 h-3.5" /> },
                   { key: "microkernel",  label: "Microkernel Bus",   icon: <Cpu         className="w-3.5 h-3.5" /> },
+                  { key: "tenants",      label: "Tenants & Partitions", icon: <Users    className="w-3.5 h-3.5" /> },
                 ],
               },
               {
@@ -1481,6 +1484,10 @@ export default function App() {
 
             {activeTab === "vectorstore" && (
               <SlsVectorStore />
+            )}
+
+            {activeTab === "tenants" && (
+              <SlsTenantPartitionManager />
             )}
 
             {activeTab === "terminal" && (
