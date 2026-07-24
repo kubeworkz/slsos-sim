@@ -2,7 +2,8 @@
  * SlsTenantPartitionManager — dashboard panel for the multitenant isolation
  * features that shipped with zero frontend surface before this: Weighted
  * CPU Scheduling, Storage Isolation (page quotas + Phase 2 byte-level
- * export), and Tenants (Multitenant Isolation Gap Analysis §5 item 1).
+ * export), Network Fairness Phase 2 (concurrent connection quotas), and
+ * Tenants (Multitenant Isolation Gap Analysis §5 item 1).
  *
  * Calls the kernel REST API directly (same-origin when served from the OS),
  * self-contained with no props, matching SlsAgentManager.tsx/
@@ -11,23 +12,29 @@
  * while this tab is open, not part of the always-on dashboard chrome.
  * Auth token: dave@gridworkz.com  DB_ADMIN  (fixed at kernel boot).
  *
- * Five real routes, merged into two per-partition tables plus a tenants
+ * Six real routes, merged into two per-partition tables plus a tenants
  * table plus a disk/tier summary:
  *   GET  /api/partitions              -- id, name, frame_usage/quota
  *   GET  /api/partition/cpuweights    -- partition_id, weight
  *   GET  /api/partition/storagequotas -- partition_id, page_usage, page_quota
+ *   GET  /api/partition/connquotas    -- partition_id, conn_usage, conn_quota
  *   GET  /api/usage                   -- partition_id, name, http_requests_total,
  *                                         frame_ticks_total, frames_now (live gauge)
  *   GET  /api/disk                    -- capacity_bytes, tiers{}, partitions[]
  *                                         (partition_id, disk_bytes_used, disk_bytes_quota)
- * The first three are merged into one "Partitions" configuration table
- * (frame/CPU/storage all live per-partition); /api/usage's cumulative
- * counters get their own "Usage Metering" table since they're telemetry,
- * not configuration; /api/disk's tier totals get their own small summary
- * strip. Every write goes through the same POST routes the terminal's
- * shell commands use (lib/shellCommands.ts) -- this panel and the terminal
- * are two different UIs over the identical backend surface, not two
- * separate implementations of it.
+ * The connquotas route did not exist until this panel went looking for it --
+ * net/tcp_quota.c (Network Fairness Phase 2) shipped with only a syscall and
+ * a shell command, so GET /api/partition/connquotas and POST /api/partition/
+ * connquota (net/http.c) were added alongside this panel's own change,
+ * mirroring the cpuweight/storagequota route pair exactly.
+ * The first four are merged into one "Partitions" configuration table
+ * (frame/CPU/storage/connections all live per-partition); /api/usage's
+ * cumulative counters get their own "Usage Metering" table since they're
+ * telemetry, not configuration; /api/disk's tier totals get their own small
+ * summary strip. Every write goes through the same POST routes the
+ * terminal's shell commands use (lib/shellCommands.ts) -- this panel and
+ * the terminal are two different UIs over the identical backend surface,
+ * not two separate implementations of it.
  */
 import React, { useState, useEffect, useCallback } from "react";
 import {
@@ -45,6 +52,7 @@ interface PartitionRow {
 }
 interface CpuWeightRow { partition_id: number; weight: number; }
 interface StorageQuotaRow { partition_id: number; page_usage: number; page_quota: number; }
+interface ConnQuotaRow { partition_id: number; conn_usage: number; conn_quota: number; }
 interface UsageRow {
   partition_id: number;
   name: string;
@@ -81,6 +89,8 @@ interface MergedPartition {
   cpu_weight: number;
   page_usage: number;
   page_quota: number;
+  conn_usage: number;
+  conn_quota: number;
   disk_bytes_used: number;
   disk_bytes_quota: number;
 }
@@ -96,6 +106,7 @@ export default function SlsTenantPartitionManager() {
   const [partitions,    setPartitions]    = useState<PartitionRow[]>([]);
   const [cpuWeights,    setCpuWeights]    = useState<CpuWeightRow[]>([]);
   const [storageQuotas, setStorageQuotas] = useState<StorageQuotaRow[]>([]);
+  const [connQuotas,    setConnQuotas]    = useState<ConnQuotaRow[]>([]);
   const [usage,         setUsage]         = useState<UsageRow[]>([]);
   const [tenants,       setTenants]       = useState<TenantRow[]>([]);
   const [disk,          setDisk]          = useState<DiskStatus | null>(null);
@@ -112,6 +123,7 @@ export default function SlsTenantPartitionManager() {
   const [configFrameQuota,  setConfigFrameQuota]  = useState("");
   const [configCpuWeight,   setConfigCpuWeight]   = useState("");
   const [configPageQuota,   setConfigPageQuota]   = useState("");
+  const [configConnQuota,   setConfigConnQuota]   = useState("");
   const [configAssignUid,   setConfigAssignUid]   = useState("");
   const [configStatus,      setConfigStatus]      = useState<string | null>(null);
 
@@ -124,20 +136,22 @@ export default function SlsTenantPartitionManager() {
     setLoading(true);
     setFetchError(null);
     try {
-      const [pRes, cwRes, sqRes, uRes, tRes, dRes] = await Promise.all([
+      const [pRes, cwRes, sqRes, cqRes, uRes, tRes, dRes] = await Promise.all([
         fetch("/api/partitions",              { headers: authHeaders }),
         fetch("/api/partition/cpuweights",    { headers: authHeaders }),
         fetch("/api/partition/storagequotas", { headers: authHeaders }),
+        fetch("/api/partition/connquotas",    { headers: authHeaders }),
         fetch("/api/usage",                   { headers: authHeaders }),
         fetch("/api/tenants",                 { headers: authHeaders }),
         fetch("/api/disk",                    { headers: authHeaders }),
       ]);
-      const [pData, cwData, sqData, uData, tData, dData] = await Promise.all([
-        pRes.json(), cwRes.json(), sqRes.json(), uRes.json(), tRes.json(), dRes.json(),
+      const [pData, cwData, sqData, cqData, uData, tData, dData] = await Promise.all([
+        pRes.json(), cwRes.json(), sqRes.json(), cqRes.json(), uRes.json(), tRes.json(), dRes.json(),
       ]);
       setPartitions(pData.partitions || []);
       setCpuWeights(cwData.cpuweights || []);
       setStorageQuotas(sqData.storagequotas || []);
+      setConnQuotas(cqData.connquotas || []);
       setUsage(uData.partitions || []);
       setTenants(tData.tenants || []);
       setDisk(dData?.capacity_bytes !== undefined ? dData : null);
@@ -158,6 +172,7 @@ export default function SlsTenantPartitionManager() {
   const merged: MergedPartition[] = partitions.map(p => {
     const cw = cpuWeights.find(c => c.partition_id === p.id);
     const sq = storageQuotas.find(s => s.partition_id === p.id);
+    const cq = connQuotas.find(c => c.partition_id === p.id);
     const db = disk?.partitions.find(d => d.partition_id === p.id);
     return {
       id: p.id,
@@ -167,6 +182,8 @@ export default function SlsTenantPartitionManager() {
       cpu_weight: cw?.weight ?? 1,
       page_usage: sq?.page_usage ?? 0,
       page_quota: sq?.page_quota ?? 0,
+      conn_usage: cq?.conn_usage ?? 0,
+      conn_quota: cq?.conn_quota ?? 0,
       disk_bytes_used: db?.disk_bytes_used ?? 0,
       disk_bytes_quota: db?.disk_bytes_quota ?? 0,
     };
@@ -219,6 +236,7 @@ export default function SlsTenantPartitionManager() {
     setConfigFrameQuota(String(row.frame_quota));
     setConfigCpuWeight(String(row.cpu_weight));
     setConfigPageQuota(String(row.page_quota));
+    setConfigConnQuota(String(row.conn_quota));
     setConfigAssignUid("");
     setConfigStatus(null);
   };
@@ -239,6 +257,10 @@ export default function SlsTenantPartitionManager() {
         fetch("/api/partition/storagequota", {
           method: "POST", headers: authHeaders,
           body: JSON.stringify({ partition_id: configurePid, page_quota: parseInt(configPageQuota, 10) || 0 }),
+        }),
+        fetch("/api/partition/connquota", {
+          method: "POST", headers: authHeaders,
+          body: JSON.stringify({ partition_id: configurePid, quota: parseInt(configConnQuota, 10) || 0 }),
         }),
       ];
       if (configAssignUid.trim()) {
@@ -328,16 +350,17 @@ export default function SlsTenantPartitionManager() {
                 <th className="text-left px-3 py-2">Frames (used/quota)</th>
                 <th className="text-left px-3 py-2">CPU Weight</th>
                 <th className="text-left px-3 py-2">Storage Pages (used/quota)</th>
+                <th className="text-left px-3 py-2">Connections (used/quota)</th>
                 <th className="text-left px-3 py-2">Disk Bytes (used/quota)</th>
                 <th className="px-3 py-2"></th>
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={7} className="px-4 py-6 text-center text-white/30">Loading from kernel...</td></tr>
+                <tr><td colSpan={8} className="px-4 py-6 text-center text-white/30">Loading from kernel...</td></tr>
               )}
               {!loading && merged.length === 0 && (
-                <tr><td colSpan={7} className="px-4 py-6 text-center text-white/30">No partitions defined. Create one to begin.</td></tr>
+                <tr><td colSpan={8} className="px-4 py-6 text-center text-white/30">No partitions defined. Create one to begin.</td></tr>
               )}
               {merged.map(row => (
                 <tr key={row.id} className="border-b border-white/5 hover:bg-white/[0.02]">
@@ -349,6 +372,9 @@ export default function SlsTenantPartitionManager() {
                   <td className="px-3 py-2.5 text-white/70">{row.cpu_weight}</td>
                   <td className="px-3 py-2.5 text-white/70">
                     {row.page_usage} / {row.page_quota === 0 ? "∞" : row.page_quota}
+                  </td>
+                  <td className="px-3 py-2.5 text-white/70">
+                    {row.conn_usage} / {row.conn_quota === 0 ? "∞" : row.conn_quota}
                   </td>
                   <td className="px-3 py-2.5 text-white/70">
                     {fmtBytes(row.disk_bytes_used)} / {row.disk_bytes_quota === 0 ? "∞" : fmtBytes(row.disk_bytes_quota)}
@@ -436,6 +462,11 @@ export default function SlsTenantPartitionManager() {
                 className="w-full bg-transparent border border-white/20 text-white text-xs px-3 py-2 focus:border-cyan-400/50 outline-none font-mono" />
             </div>
             <div>
+              <label className="text-[10px] text-white/40 uppercase tracking-wider block mb-1">Connection Quota (0=unlimited)</label>
+              <input value={configConnQuota} onChange={e => setConfigConnQuota(e.target.value)}
+                className="w-full bg-transparent border border-white/20 text-white text-xs px-3 py-2 focus:border-cyan-400/50 outline-none font-mono" />
+            </div>
+            <div>
               <label className="text-[10px] text-white/40 uppercase tracking-wider block mb-1">Assign UID (optional)</label>
               <input value={configAssignUid} onChange={e => setConfigAssignUid(e.target.value)}
                 className="w-full bg-transparent border border-white/20 text-white text-xs px-3 py-2 focus:border-cyan-400/50 outline-none font-mono"
@@ -456,7 +487,9 @@ export default function SlsTenantPartitionManager() {
           <p className="text-[9px] text-white/25 leading-relaxed">
             Storage page quota is a soft, admin-configurable ceiling underneath a second, hard, physical
             per-partition disk sub-range (Storage Isolation Roadmap Phase 3) — a quota set above that
-            physical capacity simply never binds.
+            physical capacity simply never binds. Connection quota bounds concurrent inbound connections
+            right now, distinct from any request-rate limit — a slow client holding a connection open
+            still counts against it (Network Fairness Phase 2).
           </p>
         </div>
       )}
