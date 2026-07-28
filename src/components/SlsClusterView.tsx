@@ -58,6 +58,9 @@ export default function SlsClusterView() {
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<number>(getSelectedNode());
+  const [initId, setInitId] = useState("");
+  const [peerId, setPeerId] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -82,6 +85,24 @@ export default function SlsClusterView() {
   function pick(id: number) {
     setSelectedNode(id);
     setSelected(id);
+  }
+
+  /* Forms a cluster out of nodes that are ALREADY RUNNING. Nothing here
+   * boots a machine: a kernel cannot start another kernel, and the dev
+   * server deliberately executes no host processes. Start each node
+   * yourself (see run-two-nodes.sh), then join them here. */
+  async function post(path: string, node_id: number) {
+    setMsg(null);
+    try {
+      const r = await authFetch(path, {
+        method: "POST",
+        body: JSON.stringify({ node_id }),
+      }).then((x) => x.json());
+      setMsg(r.error || r.detail || (r.ok === "true" ? "done" : "refused"));
+      load();
+    } catch {
+      setMsg("request failed");
+    }
   }
 
   if (err) {
@@ -110,10 +131,10 @@ export default function SlsClusterView() {
         <div className="rounded border border-amber-600/40 bg-amber-950/30 p-4 text-amber-200">
           <div className="font-semibold">Standalone — no cluster formed</div>
           <div className="mt-1 text-xs text-amber-300/80">
-            This node reports id 0, the reserved “uninitialised” sentinel.
-            Run <code className="text-amber-100">cluster init &lt;id&gt;</code> on its console.
-            Until then <code className="text-amber-100">partition migrate</code> takes the
-            same-disk relocate path rather than the cross-node wire path.
+            This node reports id 0, the reserved “uninitialised” sentinel. Give it an
+            identity below (or <code className="text-amber-100">cluster init &lt;id&gt;</code>
+            on its console). Until then <code className="text-amber-100">partition migrate</code>
+            takes the same-disk relocate path rather than the cross-node wire path.
           </div>
         </div>
       ) : (
@@ -132,6 +153,60 @@ export default function SlsClusterView() {
           ))}
         </div>
       )}
+
+      <div className="rounded border border-slate-700 bg-slate-900/40 p-4 space-y-3">
+        <div className="text-slate-300">Form a cluster</div>
+        <div className="text-xs text-slate-500">
+          Joins nodes that are <em>already running</em>. Nothing here boots a machine —
+          a kernel cannot start another kernel. Start each node first
+          (<code className="text-slate-400">run-two-nodes.sh</code>), then join them.
+        </div>
+
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="text-xs text-slate-400">
+            <div className="mb-1">This node&rsquo;s id</div>
+            <input
+              value={initId}
+              onChange={(e) => setInitId(e.target.value)}
+              placeholder="1"
+              className="w-24 rounded bg-slate-800 border border-slate-700 px-2 py-1 text-slate-100"
+            />
+          </label>
+          <button
+            onClick={() => post("/api/cluster/init", Number.parseInt(initId, 10) || 0)}
+            className="rounded bg-slate-700 px-3 py-1 text-slate-100 hover:bg-slate-600"
+          >
+            Set identity
+          </button>
+
+          <label className="text-xs text-slate-400 ml-4">
+            <div className="mb-1">Register peer id</div>
+            <input
+              value={peerId}
+              onChange={(e) => setPeerId(e.target.value)}
+              placeholder="2"
+              className="w-24 rounded bg-slate-800 border border-slate-700 px-2 py-1 text-slate-100"
+            />
+          </label>
+          <button
+            onClick={() => post("/api/cluster/peer", Number.parseInt(peerId, 10) || 0)}
+            className="rounded bg-slate-700 px-3 py-1 text-slate-100 hover:bg-slate-600"
+          >
+            Register
+          </button>
+        </div>
+
+        {/* cluster_init() RESETS term, role and roster -- it is a fresh
+            start, not a merge (consensus.h). Saying so beside the button
+            rather than letting an operator discover it by dropping a
+            healthy node out of its cluster. */}
+        <div className="text-xs text-amber-400/80">
+          Setting an identity <strong>resets</strong> this node&rsquo;s term, role and roster.
+          On a node already in a working cluster, that drops it out.
+        </div>
+
+        {msg && <div className="text-xs text-slate-300">→ {msg}</div>}
+      </div>
 
       <div>
         <div className="mb-2 text-slate-300">
