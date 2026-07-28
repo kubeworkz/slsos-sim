@@ -49,6 +49,7 @@ import SlsWorkflowBuilder from "./components/SlsWorkflowBuilder";
 import SlsTerminal from "./components/SlsTerminal";
 import SlsVectorStore from "./components/SlsVectorStore";
 import SlsTenantPartitionManager from "./components/SlsTenantPartitionManager";
+import SlsClusterView from "./components/SlsClusterView";
 
 import {
   Layers,
@@ -69,8 +70,7 @@ import {
   GitBranch,
   TerminalSquare,
   Boxes,
-  Users
-} from "lucide-react";
+  Users, Network} from "lucide-react";
 
 const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
   return [
@@ -157,7 +157,7 @@ const getInitialObjectsForUser = (user: PortalUser): SlsObject[] => {
 
 export default function App() {
   // Navigation tabs — start on "memory" if already logged in, else "portal"
-  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "tenants" | "coprocessor" | "dbengine" | "vectorstore" | "portal" | "agents" | "workflows" | "terminal">(() => {
+  const [activeTab, setActiveTab] = useState<"memory" | "security" | "transactions" | "microkernel" | "cluster" | "tenants" | "coprocessor" | "dbengine" | "vectorstore" | "portal" | "agents" | "workflows" | "terminal">(() => {
     const saved = localStorage.getItem("sls_current_portal_user");
     return saved ? "memory" : "portal";
   });
@@ -1343,6 +1343,7 @@ export default function App() {
                   { key: "security",     label: "Protection Rings",  icon: <ShieldCheck className="w-3.5 h-3.5" /> },
                   { key: "transactions", label: "Transactional Log", icon: <Database    className="w-3.5 h-3.5" /> },
                   { key: "microkernel",  label: "Microkernel Bus",   icon: <Cpu         className="w-3.5 h-3.5" /> },
+                  { key: "cluster",      label: "Cluster",           icon: <Network     className="w-3.5 h-3.5" /> },
                   { key: "tenants",      label: "Tenants & Partitions", icon: <Users    className="w-3.5 h-3.5" /> },
                 ],
               },
@@ -1484,6 +1485,10 @@ export default function App() {
 
             {activeTab === "vectorstore" && (
               <SlsVectorStore />
+            )}
+
+            {activeTab === "cluster" && (
+              <SlsClusterView />
             )}
 
             {activeTab === "tenants" && (

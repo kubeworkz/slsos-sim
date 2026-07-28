@@ -27,8 +27,58 @@ function isLocalOnlyApiPath(pathname: string): boolean {
   );
 }
 
+/* ─── Node address book ────────────────────────────────────────────────
+ * The kernel deals in node IDs; nothing in the cluster maps an ID to an
+ * HTTP endpoint, because DSPP is L2 broadcast and deliberately never
+ * needed one (net/dspp.h). So the address book is configuration.
+ *
+ *   AEROSLS_NODES="1=http://localhost:3001,2=http://localhost:3002"
+ *
+ * Unset means exactly the previous behaviour: one kernel on :3001. A
+ * request to an unknown node id is refused rather than silently served by
+ * the default target -- answering for the wrong machine is worse than
+ * answering "I do not know where that node is". */
+const DEFAULT_KERNEL = process.env.AEROSLS_KERNEL || "http://localhost:3001";
+
+function parseNodeTargets(): Map<number, string> {
+  const m = new Map<number, string>();
+  const spec = process.env.AEROSLS_NODES;
+  if (!spec) return m;
+  for (const part of spec.split(",")) {
+    const [idRaw, url] = part.split("=");
+    const id = Number.parseInt((idRaw || "").trim(), 10);
+    if (Number.isFinite(id) && id > 0 && url) m.set(id, url.trim());
+  }
+  return m;
+}
+const NODE_TARGETS = parseNodeTargets();
+
+/* /node/<id>/api/... -> that node's kernel, prefix stripped. Registered
+ * BEFORE the default proxy so a node-scoped path never falls through to
+ * the default target. */
+const nodeProxy = createProxyMiddleware({
+  router: (req: any) => {
+    const m = /^\/node\/(\d+)\//.exec(req.url || "");
+    const id = m ? Number.parseInt(m[1], 10) : 0;
+    return NODE_TARGETS.get(id) || DEFAULT_KERNEL;
+  },
+  target: DEFAULT_KERNEL,   // required by the type; router() overrides per request
+  changeOrigin: true,
+  pathFilter: (pathname) => /^\/node\/\d+\/(api|auth)\//.test(pathname),
+  pathRewrite: (path: string) => path.replace(/^\/node\/\d+/, ""),
+  on: {
+    error: (_err: any, _req: any, res: any) => {
+      if (res && !res.headersSent) {
+        res.status(502).json({ error: "Node not reachable",
+                               details: "No AeroSLS kernel answered for that node id" });
+      }
+    },
+    proxyReq: fixRequestBody,
+  },
+});
+
 const kernelProxy = createProxyMiddleware({
-  target: "http://localhost:3001",
+  target: DEFAULT_KERNEL,
   changeOrigin: true,
   pathFilter: (pathname) => {
     if (isLocalOnlyApiPath(pathname)) return false;
@@ -52,7 +102,8 @@ async function startServer() {
 
   // Forward OS-specific routes to the live AeroSLS kernel (port 3001).
   // pathFilter in kernelProxy handles the route matching (preserves full path).
-  app.use(kernelProxy);
+  app.use(nodeProxy);      // node-scoped first: /node/<id>/api/...
+  app.use(kernelProxy);    // then the default single-kernel path
 
   // ─── AI generation — privacy-first, configurable backend ───────────────────
   // Set AI_BACKEND in .env to choose the inference engine:
