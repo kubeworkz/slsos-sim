@@ -4,6 +4,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import { createProxyMiddleware, fixRequestBody } from "http-proxy-middleware";
+import { parseNodeTargets, resolveNodeTarget } from "./src/lib/nodeTargets";
 
 dotenv.config();
 
@@ -40,27 +41,47 @@ function isLocalOnlyApiPath(pathname: string): boolean {
  * answering "I do not know where that node is". */
 const DEFAULT_KERNEL = process.env.AEROSLS_KERNEL || "http://localhost:3001";
 
-function parseNodeTargets(): Map<number, string> {
-  const m = new Map<number, string>();
-  const spec = process.env.AEROSLS_NODES;
-  if (!spec) return m;
-  for (const part of spec.split(",")) {
-    const [idRaw, url] = part.split("=");
-    const id = Number.parseInt((idRaw || "").trim(), 10);
-    if (Number.isFinite(id) && id > 0 && url) m.set(id, url.trim());
-  }
-  return m;
+const { targets: NODE_TARGETS, rejected: NODE_TARGETS_REJECTED } =
+  parseNodeTargets(process.env.AEROSLS_NODES);
+for (const bad of NODE_TARGETS_REJECTED) {
+  console.warn(`[nodes] ignoring malformed AEROSLS_NODES entry: ${bad}`);
 }
-const NODE_TARGETS = parseNodeTargets();
+if (NODE_TARGETS.size > 0) {
+  console.log(`[nodes] address book: ${[...NODE_TARGETS.entries()]
+    .map(([id, url]) => `${id}=${url}`).join(", ")}`);
+}
+
+/* Refuse a node id we cannot place, BEFORE the proxy gets a chance to fall
+ * back to the default target.
+ *
+ * The router below used `NODE_TARGETS.get(id) || DEFAULT_KERNEL`, directly
+ * contradicting the comment above it: with AEROSLS_NODES unset, a request
+ * for /node/4/ was served by node 1, and the panel showed node 1's roster
+ * and memory under the heading "node 4". Wrong data, no error. */
+function nodeGuard(req: any, res: any, next: any) {
+  const m = /^\/node\/(\d+)\/(api|auth)\//.exec(req.url || "");
+  if (!m) return next();
+
+  const r = resolveNodeTarget(Number.parseInt(m[1], 10), NODE_TARGETS, DEFAULT_KERNEL);
+  if (r.target === null) {
+    res.status(502).json({ error: "Node not reachable", details: r.reason });
+    return;
+  }
+  next();
+}
 
 /* /node/<id>/api/... -> that node's kernel, prefix stripped. Registered
  * BEFORE the default proxy so a node-scoped path never falls through to
  * the default target. */
 const nodeProxy = createProxyMiddleware({
   router: (req: any) => {
+    /* nodeGuard has already refused anything unresolvable, so this only
+     * ever runs for an id that resolves. The fallback is unreachable and
+     * kept solely because the type requires a string. */
     const m = /^\/node\/(\d+)\//.exec(req.url || "");
     const id = m ? Number.parseInt(m[1], 10) : 0;
-    return NODE_TARGETS.get(id) || DEFAULT_KERNEL;
+    const r = resolveNodeTarget(id, NODE_TARGETS, DEFAULT_KERNEL);
+    return r.target || DEFAULT_KERNEL;
   },
   target: DEFAULT_KERNEL,   // required by the type; router() overrides per request
   changeOrigin: true,
@@ -102,6 +123,7 @@ async function startServer() {
 
   // Forward OS-specific routes to the live AeroSLS kernel (port 3001).
   // pathFilter in kernelProxy handles the route matching (preserves full path).
+  app.use(nodeGuard);      // refuse an unplaceable node id outright
   app.use(nodeProxy);      // node-scoped first: /node/<id>/api/...
   app.use(kernelProxy);    // then the default single-kernel path
 
