@@ -90,7 +90,11 @@ export default function SlsClusterView() {
   /* Forms a cluster out of nodes that are ALREADY RUNNING. Nothing here
    * boots a machine: a kernel cannot start another kernel, and the dev
    * server deliberately executes no host processes. Start each node
-   * yourself (see run-two-nodes.sh), then join them here. */
+   * yourself (see run-cluster.sh), then join them here.
+   *
+   * Registering is per-node: cluster_roster[] is local state in each
+   * kernel, so node 1 knowing about node 2 does not make node 2 know about
+   * node 1. Each node has to be told about the others. */
   async function post(path: string, node_id: number) {
     setMsg(null);
     try {
@@ -158,8 +162,13 @@ export default function SlsClusterView() {
         <div className="text-slate-300">Form a cluster</div>
         <div className="text-xs text-slate-500">
           Joins nodes that are <em>already running</em>. Nothing here boots a machine —
-          a kernel cannot start another kernel. Start each node first
-          (<code className="text-slate-400">run-two-nodes.sh</code>), then join them.
+          a kernel cannot start another kernel. Start them first
+          (<code className="text-slate-400">./run-cluster.sh --nodes 4</code>), then join them.
+          The roster is <em>per node</em>: registering a peer here teaches
+          only <em>this</em> node about it, so each node must be told about the others.
+          Data movement does not wait for any of that — DSPP filters by node id,
+          not roster membership, so <code className="text-slate-400">partition migrate</code>
+          already works. The roster is what quorum and elections count.
         </div>
 
         <div className="flex flex-wrap items-end gap-3">
