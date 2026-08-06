@@ -58,6 +58,9 @@ interface BenchResult {
   min?: number;
   max?: number;
   requested?: number;
+  /* Present only on a refusal the kernel knows how to fix. */
+  remedy?: string;
+  defect?: string;
 }
 
 const LOADS = 500;
@@ -152,9 +155,17 @@ export default function SlsGuestRuntime() {
       });
       const d: BenchResult = await res.json();
       if (d.ok !== "true") {
-        setError(d.min !== undefined
-          ? `${d.error} — loads must be ${d.min}..${d.max}, got ${d.requested}`
-          : (d.error || "bench failed"));
+        // The kernel now returns a remedy alongside the refusal where it knows
+        // one. Surfacing it matters: the paging refusal is recoverable in one
+        // request, and an error that names the fix is the difference between
+        // "the node is broken" and "restart it".
+        setError(
+          d.min !== undefined
+            ? `${d.error} — loads must be ${d.min}..${d.max}, got ${d.requested}`
+            : d.remedy
+              ? `${d.error}. Remedy: ${d.remedy}`
+              : (d.error || "bench failed")
+        );
         return;
       }
       setSoftmmu(d.softmmu);
