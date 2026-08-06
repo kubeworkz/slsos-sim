@@ -1507,6 +1507,77 @@ register({
   },
 });
 
+// ─── QEMU-SLS: the in-node guest runtime ────────────────────────────────────
+// QEMU-SLS is QEMU's TCG linked into the AeroSLS kernel (15 objects) so a node
+// can execute guest binaries inside itself. It is NOT the qemu-system-x86_64
+// that runs the node -- that one is stock, launched by run-cluster.sh. Two
+// different QEMUs at two different layers, and conflating them is the single
+// easiest mistake to make about this architecture.
+//
+// These were unreachable from this app until POST /api/qemu/* existed: `qemu`
+// was never in this table, and the /api/shell/exec passthrough was retired
+// when every shell command got a purpose-built route, so `qemu bench` in the
+// Terminal answered "command not found".
+//
+// Deliberately no `qemu run <hex>`. It exists on the serial console but feeds
+// arbitrary bytes to the guest frontend and the shadow-paging fault path, the
+// frontend implements 18 opcodes so it cannot run a real binary anyway, and
+// there is no matching HTTP route to call.
+register({
+  name: "qemu bench",
+  usage: "qemu bench [loads]  (guest load-path benchmark; loads 1-510, default 256)",
+  handler: async (rest) => {
+    const [loadsArg] = words(rest);
+    const body: Record<string, unknown> = {};
+    if (loadsArg) {
+      const n = parseInt(loadsArg, 10);
+      if (!Number.isFinite(n)) return err("usage: qemu bench [loads]");
+      body.loads = n;
+    }
+    const d = await postJSON("/api/qemu/bench", body);
+    if (!isOk(d)) {
+      // The kernel returns min/max on a range refusal; surface them rather
+      // than the generic message, since "out of range" without the range is
+      // the least useful error a shell can give.
+      if (d?.min !== undefined && d?.max !== undefined)
+        return err(`${errOf(d) || "refused"} — loads must be ${d.min}..${d.max}, got ${d.requested}`);
+      return err(errOf(d) || "bench failed");
+    }
+    // CODE bytes is the figure to read: it has never varied across any sample
+    // this project has taken, while the cycle columns carry a ~10% cold CV and
+    // are contaminated by the outer emulator when there is no KVM.
+    const perLoad = d.loads ? Math.round((d.code_bytes / d.loads) * 100) / 100 : 0;
+    const lines = [
+      `${d.cold === "true" ? "COLD" : "WARM"} run — softmmu=${d.softmmu}`,
+      "",
+      `translation   ${d.blocks} block(s) compiled, ${d.code_bytes} bytes emitted` +
+        (d.cold === "true" ? ` (${perLoad} bytes/load)` : ""),
+      `cache         ${d.tcache_hits} hit(s), ${d.tcache_misses} miss(es)`,
+      `arena         ${d.arena_consumed} byte(s) consumed this launch`,
+      `guest         ${d.insns} instruction(s) executed`,
+      "",
+      d.cold === "true"
+        ? "First launch since boot: every block was compiled."
+        : "Served from the translation cache — nothing was compiled.",
+    ];
+    return { text: lines.join("\n") };
+  },
+});
+register({
+  name: "qemu paging",
+  usage: "qemu paging  (end-to-end guest page-table walk through the shadow MMU)",
+  handler: async () => {
+    const d = await postJSON("/api/qemu/paging", {});
+    if (!isOk(d)) return err(errOf(d) || "paging test failed");
+    // Pass and fail are genuinely distinguishable here: the guest reads a GVA
+    // whose physical target is elsewhere, so the identity mapping would return
+    // 0 and only a real walk of the guest's own tables yields the magic value.
+    return d.pass === "true"
+      ? ok("guest paging PASS — shadow walker resolved through the guest's own page tables")
+      : err(`guest paging FAIL (rc=${d.rc})`);
+  },
+});
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 // Longest command name (by word count) wins, so "vec index search" is tried
 // before "vec" would ever be (and "vec" alone was never registered as its

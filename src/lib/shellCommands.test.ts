@@ -407,6 +407,89 @@ async function main() {
   const help = await runCommand("help");
   check("help lists commands", help.text.includes("valloc") && help.text.includes("vfree") && help.text.includes("login"));
 
+  // ── QEMU-SLS guest runtime ──────────────────────────────────────────────
+  // These commands could not exist before POST /api/qemu/* did: `qemu` was
+  // never in the registry and the /api/shell/exec passthrough was retired, so
+  // `qemu bench` in the Terminal answered "command not found". The response
+  // shapes below were captured from a live node, not invented.
+  calls = []; mockNext({
+    ok: "true", loads: 500, insns: 502, total_cycles: 41076749,
+    exec_cycles: 2868436, translate_cycles: 28374307, blocks: 8,
+    code_bytes: 8003, tcache_hits: 0, tcache_misses: 8, cold: "true",
+    arena_consumed: 1507392, arena_used: 1508448, arena_total: 67108864,
+    softmmu: "off",
+  });
+  const benchCold = await runCommand("qemu bench 500");
+  eq("qemu bench: posts to /api/qemu/bench", lastCall().url.endsWith("/api/qemu/bench"), true);
+  eq("qemu bench: method POST", lastCall().method, "POST");
+  eq("qemu bench: passes loads through", lastCall().body, { loads: 500 });
+  check("qemu bench: labels a cold run", benchCold.text.includes("COLD"));
+  check("*** qemu bench: reports CODE bytes, the figure that never varies ***",
+        benchCold.text.includes("8003"));
+  // 8003 / 500 = 16.006 -> 16.01. Asserted exactly: an `|| includes("16")`
+  // fallback would have passed on almost any output, which is the kind of
+  // assertion that exists without checking anything.
+  check("qemu bench: reports bytes/load on a cold run", benchCold.text.includes("16.01"));
+  check("qemu bench: reports the cache miss count", benchCold.text.includes("8 miss(es)"));
+  check("qemu bench: surfaces which side of the A/B", benchCold.text.includes("softmmu=off"));
+  check("qemu bench: not an error", !benchCold.isError);
+
+  // A warm run must be visibly different, not just numerically -- this is the
+  // whole point of the screen it feeds.
+  calls = []; mockNext({
+    ok: "true", loads: 500, insns: 502, total_cycles: 9065686,
+    exec_cycles: 142686, translate_cycles: 0, blocks: 0, code_bytes: 0,
+    tcache_hits: 8, tcache_misses: 0, cold: "false",
+    arena_consumed: 0, arena_used: 1508448, arena_total: 67108864,
+    softmmu: "off",
+  });
+  const benchWarm = await runCommand("qemu bench 500");
+  check("qemu bench: labels a warm run", benchWarm.text.includes("WARM"));
+  check("*** qemu bench: a warm run says nothing was compiled ***",
+        benchWarm.text.includes("nothing was compiled"));
+  check("qemu bench: reports the cache hits", benchWarm.text.includes("8 hit(s)"));
+  check("qemu bench: warm run consumed no arena", benchWarm.text.includes("0 byte(s) consumed"));
+
+  // Omitting the argument must not send loads:undefined -- the kernel would
+  // read that as 0 and refuse, when the intent is "use the default".
+  calls = []; mockNext({ ok: "true", loads: 256, insns: 258, total_cycles: 1,
+    exec_cycles: 1, translate_cycles: 1, blocks: 4, code_bytes: 4096,
+    tcache_hits: 0, tcache_misses: 4, cold: "true", arena_consumed: 1,
+    arena_used: 1, arena_total: 2, softmmu: "off" });
+  await runCommand("qemu bench");
+  eq("*** qemu bench with no arg sends an empty body, not loads:undefined ***",
+     lastCall().body, {});
+
+  // The kernel validates the range and returns min/max. A shell that swallows
+  // those and says "out of range" is the least useful error possible.
+  calls = []; mockNext({ ok: "false", error: "loads out of range", min: 1, max: 510, requested: 9999 });
+  const benchBad = await runCommand("qemu bench 9999");
+  check("qemu bench: a range refusal is an error", benchBad.isError === true);
+  check("*** qemu bench: the refusal states the actual range and what was sent ***",
+        benchBad.text.includes("1..510") && benchBad.text.includes("9999"));
+
+  calls = []; mockNext({ ok: "true", pass: "true", rc: 0 });
+  const paging = await runCommand("qemu paging");
+  eq("qemu paging: posts to /api/qemu/paging", lastCall().url.endsWith("/api/qemu/paging"), true);
+  check("qemu paging: reports PASS", paging.text.includes("PASS") && !paging.isError);
+
+  calls = []; mockNext({ ok: "true", pass: "false", rc: 3 });
+  const pagingFail = await runCommand("qemu paging");
+  check("*** qemu paging: ok:true with pass:false is still a FAILURE ***",
+        pagingFail.isError === true && pagingFail.text.includes("rc=3"));
+
+  // Router: "qemu bench" and "qemu paging" are two names sharing a first word,
+  // the same shape as "vec index search" vs "vec insert". A regression here
+  // would route one to the other and silently benchmark instead of testing.
+  calls = []; mockNext({ ok: "true", pass: "true", rc: 0 });
+  await runCommand("qemu paging");
+  eq("*** router: 'qemu paging' does not fall through to 'qemu bench' ***",
+     lastCall().url.endsWith("/api/qemu/paging"), true);
+
+  const qemuRun = await runCommand("qemu run deadbeef");
+  check("*** 'qemu run' is NOT registered -- no HTTP route, by design ***",
+        qemuRun.isError === true);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 }
