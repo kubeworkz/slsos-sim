@@ -120,6 +120,7 @@ export default function SlsGuestRuntime() {
   const [error, setError] = useState<string | null>(null);
   const [paging, setPaging] = useState<{ pass: boolean; rc: number } | null>(null);
   const [softmmu, setSoftmmu] = useState<string | null>(null);
+  const [repeatedCold, setRepeatedCold] = useState(0);
 
   async function runBench() {
     setBusy(true); setError(null);
@@ -140,7 +141,21 @@ export default function SlsGuestRuntime() {
       // The KERNEL decides which of these a run is, not the UI. It uses the
       // same test the serial console uses to print "cold: every block was
       // compiled", so the two can never disagree about the same run.
-      if (d.cold === "true") { setCold(d); setWarm(null); } else { setWarm(d); }
+      if (d.cold === "true") {
+        // Two cold runs in a row is a REAL SIGNAL, not a UI state to swallow.
+        // The second run should have hit the translation cache; if it did not,
+        // either the node restarted between requests (the cache is fine, the
+        // node is dying) or the cache is not surviving between requests at all.
+        // An earlier version silently replaced the left panel and cleared the
+        // right, so the screen looked like it was cycling and said nothing --
+        // exactly the kind of quiet failure this project keeps paying for.
+        if (cold) setRepeatedCold(c => c + 1);
+        setCold(d);
+        setWarm(null);
+      } else {
+        setRepeatedCold(0);
+        setWarm(d);
+      }
     } catch (e: any) {
       setError(e?.message || "request failed");
     } finally { setBusy(false); }
@@ -217,11 +232,38 @@ export default function SlsGuestRuntime() {
         </div>
       )}
 
+      {/* A second cold run means the cache did not survive between requests.
+          Say so, with the two things that cause it and the command that tells
+          them apart -- rather than replacing the panel and looking like a
+          cycling UI. */}
+      {repeatedCold > 0 && (
+        <div className="flex gap-2 items-start bg-amber-500/5 border border-amber-400/25 p-3">
+          <AlertCircle className="w-3.5 h-3.5 text-amber-300 shrink-0 mt-0.5" />
+          <div className="font-mono text-[10px] text-amber-200/80 leading-relaxed">
+            <span className="text-amber-200">
+              {repeatedCold + 1} consecutive runs came back cold.
+            </span>{" "}
+            The repeat should have been served from the translation cache. Two
+            things cause this, and they need different fixes:
+            <div className="mt-1.5 text-white/50">
+              • the node restarted between requests — the cache is fine, the node
+              is dying. Check <span className="text-white/70">pm2 list</span> for a
+              climbing restart count.
+              <br />
+              • the cache is not surviving between requests at all — a real
+              regression in the tcache path.
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-3">
         <RunPanel title="First run since boot" r={cold}
           subtitle="Run the benchmark to compile the guest" />
         <RunPanel title="Repeat run" r={warm}
-          subtitle="Run it again — nothing should be compiled" />
+          subtitle={repeatedCold > 0
+            ? "Still compiling — see the warning above"
+            : "Run it again — nothing should be compiled"} />
       </div>
 
       {savedBytes !== null && savedBytes > 0 && (
