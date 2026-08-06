@@ -121,6 +121,7 @@ export default function SlsGuestRuntime() {
   const [paging, setPaging] = useState<{ pass: boolean; rc: number } | null>(null);
   const [softmmu, setSoftmmu] = useState<string | null>(null);
   const [repeatedCold, setRepeatedCold] = useState(0);
+  const [pagingSpent, setPagingSpent] = useState(false);
 
   async function runBench() {
     setBusy(true); setError(null);
@@ -167,6 +168,12 @@ export default function SlsGuestRuntime() {
       const res = await authFetch("/api/qemu/paging", { method: "POST" });
       const d = await res.json();
       setPaging({ pass: d.pass === "true", rc: Number(d.rc ?? -1) });
+      // One run per page load. See the banner below and
+      // docs/AeroSLS-QEMU-SLS-Guest-Paging-Reset-Defect-v0.1.md: the test
+      // leaves the node's guest address space permanently reconfigured, and
+      // leaks ~130 page-table frames each time. A button makes that repeatable
+      // in a way the console command never was.
+      setPagingSpent(true);
     } catch (e: any) {
       setError(e?.message || "request failed");
     } finally { setBusy(false); }
@@ -207,11 +214,34 @@ export default function SlsGuestRuntime() {
           className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider px-3 py-2 border border-cyan-400/30 text-cyan-300 hover:bg-cyan-400/10 disabled:opacity-40">
           <Play className="w-3 h-3" /> Run benchmark ({LOADS} loads)
         </button>
-        <button onClick={runPaging} disabled={busy}
-          className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider px-3 py-2 border border-white/15 text-white/60 hover:bg-white/5 disabled:opacity-40">
+        <button onClick={runPaging} disabled={busy || pagingSpent}
+          title={pagingSpent ? "Already run on this node — restart it before running again" : undefined}
+          className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider px-3 py-2 border border-white/15 text-white/60 hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed">
           <ShieldCheck className="w-3 h-3" /> Test guest paging
         </button>
       </div>
+
+      {/* Not a UI nicety. The paging test permanently reconfigures the node's
+          guest address space and leaks ~130 page-table frames per run; nothing
+          in the kernel resets it. See
+          docs/AeroSLS-QEMU-SLS-Guest-Paging-Reset-Defect-v0.1.md. Disabling
+          the button after one run is a guard, not a fix -- the shell command
+          and the HTTP route both still reach it. */}
+      {pagingSpent && (
+        <div className="flex gap-2 items-start bg-[#0F1219] border border-amber-400/20 p-3">
+          <AlertCircle className="w-3.5 h-3.5 text-amber-300/70 shrink-0 mt-0.5" />
+          <div className="font-mono text-[10px] text-white/50 leading-relaxed">
+            <span className="text-amber-200/90">Paging test spent for this node.</span>{" "}
+            It leaves guest paging enabled with no reset path, so benchmarks after
+            it run in an address space built for a different guest and will report
+            cold every time. Restart the node before trusting further numbers.
+            <div className="mt-1 text-white/35">
+              Open defect — the button is limited to one run per page load as a
+              guard, not a fix.
+            </div>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="flex gap-2 items-center bg-red-500/5 border border-red-400/20 p-3">
