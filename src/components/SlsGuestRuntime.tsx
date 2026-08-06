@@ -31,8 +31,8 @@
  * binary anyway. A box that answered "unsupported opcode" to everything a
  * visitor tried would make honest work look broken.
  */
-import React, { useState } from "react";
-import { Cpu, Play, Zap, ShieldCheck, AlertCircle, Layers } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { Cpu, Play, Zap, ShieldCheck, AlertCircle, Layers, Network } from "lucide-react";
 import { authFetch } from "../lib/apiFetch";
 
 /** Shape of POST /api/qemu/bench, captured from a live node — not inferred.
@@ -122,6 +122,25 @@ export default function SlsGuestRuntime() {
   const [softmmu, setSoftmmu] = useState<string | null>(null);
   const [repeatedCold, setRepeatedCold] = useState(0);
   const [pagingSpent, setPagingSpent] = useState(false);
+  // Which node this screen is talking to. Every figure below is that node's
+  // alone -- a cold/warm pair only means anything if both runs hit the same
+  // one, and until now the screen gave no way to tell which that was.
+  const [node, setNode] = useState<{ id: number; role: string; active: number } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await authFetch("/api/cluster");
+        const d = await r.json();
+        if (!cancelled && d?.node_id !== undefined) {
+          setNode({ id: Number(d.node_id), role: String(d.role ?? "?"),
+                    active: Number(d.active_nodes ?? 0) });
+        }
+      } catch { /* identity is a label, not a dependency — the screen works without it */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   async function runBench() {
     setBusy(true); setError(null);
@@ -192,11 +211,20 @@ export default function SlsGuestRuntime() {
             Binary translation inside the node · TCG linked into the kernel
           </p>
         </div>
-        {softmmu && (
-          <span className="font-mono text-[9px] px-2 py-1 border border-white/10 text-white/50">
-            softmmu={softmmu}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {node && (
+            <span className="flex items-center gap-1.5 font-mono text-[9px] px-2 py-1 border border-cyan-400/25 text-cyan-300/80">
+              <Network className="w-3 h-3" />
+              NODE {node.id} · {node.role.toUpperCase()}
+              {node.active > 0 && <span className="text-white/30">· {node.active} active</span>}
+            </span>
+          )}
+          {softmmu && (
+            <span className="font-mono text-[9px] px-2 py-1 border border-white/10 text-white/50">
+              softmmu={softmmu}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* The one thing this screen must not let a visitor conclude. */}
