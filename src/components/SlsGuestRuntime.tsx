@@ -210,8 +210,14 @@ export default function SlsGuestRuntime() {
       </div>
 
       <div className="flex gap-2">
-        <button onClick={runBench} disabled={busy}
-          className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider px-3 py-2 border border-cyan-400/30 text-cyan-300 hover:bg-cyan-400/10 disabled:opacity-40">
+        {/* Disabled once paging has run: the kernel now REFUSES to launch a
+            guest in that state (sls_launch_guest), because doing it used to
+            hang the node outright -- HTTP stopped answering and every endpoint
+            502'd. Greying the button says so before the click rather than
+            after a failed request. */}
+        <button onClick={runBench} disabled={busy || pagingSpent}
+          title={pagingSpent ? "Node must be restarted — a paged guest left no reset path" : undefined}
+          className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider px-3 py-2 border border-cyan-400/30 text-cyan-300 hover:bg-cyan-400/10 disabled:opacity-40 disabled:cursor-not-allowed">
           <Play className="w-3 h-3" /> Run benchmark ({LOADS} loads)
         </button>
         <button onClick={runPaging} disabled={busy || pagingSpent}
@@ -231,13 +237,17 @@ export default function SlsGuestRuntime() {
         <div className="flex gap-2 items-start bg-[#0F1219] border border-amber-400/20 p-3">
           <AlertCircle className="w-3.5 h-3.5 text-amber-300/70 shrink-0 mt-0.5" />
           <div className="font-mono text-[10px] text-white/50 leading-relaxed">
-            <span className="text-amber-200/90">Paging test spent for this node.</span>{" "}
-            It leaves guest paging enabled with no reset path, so benchmarks after
-            it run in an address space built for a different guest and will report
-            cold every time. Restart the node before trusting further numbers.
+            <span className="text-amber-200/90">This node needs a restart.</span>{" "}
+            The paging test leaves guest paging enabled with no reset path: the
+            guest window's identity mappings are dropped and not restored, so any
+            later guest would execute in the address space built for that test.
+            Doing so <span className="text-amber-200/90">hangs the node</span> —
+            HTTP stops answering and every endpoint returns 502.
             <div className="mt-1 text-white/35">
-              Open defect — the button is limited to one run per page load as a
-              guard, not a fix.
+              Both buttons are disabled and the kernel now refuses the launch
+              outright rather than hanging. Guards, not a fix — the shell command
+              and the HTTP route are still reachable. Restart the node to run
+              guests again.
             </div>
           </div>
         </div>
