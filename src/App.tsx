@@ -47,6 +47,7 @@ import SlsDbEngine from "./components/SlsDbEngine";
 import SlsAgentManager from "./components/SlsAgentManager";
 import SlsWorkflowBuilder from "./components/SlsWorkflowBuilder";
 import SlsTerminal from "./components/SlsTerminal";
+import SlsGuestRuntime from "./components/SlsGuestRuntime";
 import SlsVectorStore from "./components/SlsVectorStore";
 import SlsTenantPartitionManager from "./components/SlsTenantPartitionManager";
 import SlsClusterView from "./components/SlsClusterView";
@@ -1343,6 +1344,10 @@ export default function App() {
                   { key: "security",     label: "Protection Rings",  icon: <ShieldCheck className="w-3.5 h-3.5" /> },
                   { key: "transactions", label: "Transactional Log", icon: <Database    className="w-3.5 h-3.5" /> },
                   { key: "microkernel",  label: "Microkernel Bus",   icon: <Cpu         className="w-3.5 h-3.5" /> },
+                  // QEMU-SLS. Filed under System rather than its own group: it
+                  // is a kernel subsystem, not a product surface, and grouping
+                  // it beside the microkernel bus is the honest placement.
+                  { key: "guestruntime", label: "Guest Runtime",     icon: <Play        className="w-3.5 h-3.5" /> },
                   { key: "cluster",      label: "Cluster",           icon: <Network     className="w-3.5 h-3.5" /> },
                   { key: "tenants",      label: "Tenants & Partitions", icon: <Users    className="w-3.5 h-3.5" /> },
                 ],
@@ -1497,6 +1502,10 @@ export default function App() {
 
             {activeTab === "terminal" && (
               <SlsTerminal />
+            )}
+
+            {activeTab === "guestruntime" && (
+              <SlsGuestRuntime />
             )}
 
             {activeTab === "agents" && (
